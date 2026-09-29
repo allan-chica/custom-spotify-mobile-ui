@@ -1,0 +1,628 @@
+/* Spotify Mobile Prototype — style.css
+ * Dark, mobile-first player card. All selectors are scoped under #spm-root
+ * so Spotify's own styles are never rewritten.
+ */
+
+#spm-root {
+  --spm-bg: rgba(16, 16, 22, 0.86);
+  --spm-card-border: rgba(255, 255, 255, 0.09);
+  --spm-text: #f5f3ee;
+  --spm-muted: rgba(245, 243, 238, 0.6);
+  --spm-faint: rgba(245, 243, 238, 0.38);
+  --spm-green: #1ed760;
+  --spm-accent: #e8e4da;
+  --spm-radius: 24px;
+  --spm-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.4);
+  /* --spm-zoom / --spm-vw / --spm-vh are set from JS (see ui.js
+   * applyEnvironment + adapter.getViewportInfo). On desktop they are
+   * exactly 1 / innerWidth / innerHeight, i.e. visual no-ops. On phones
+   * where Spotify's desktop layout is scaled down to fit, zoom
+   * counter-magnifies ONLY our own box back to true physical size.
+   * `zoom` affects layout (unlike transform), so no origin/overflow math
+   * is needed; supported in all Chromium targets (desktop + Quetta). */
+  --spm-zoom: 1;
+  --spm-vw: 100vw;
+  --spm-vh: 100dvh;
+  zoom: var(--spm-zoom);
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 999999;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--spm-text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+#spm-root * {
+  box-sizing: border-box;
+}
+
+/* ---------- Card ---------- */
+
+#spm-root .spm-card {
+  position: relative;
+  width: min(380px, calc(var(--spm-vw) - 40px));
+  max-height: min(86vh, 780px, var(--spm-vh));
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 18px 18px 14px;
+  background: var(--spm-bg);
+  border: 1px solid var(--spm-card-border);
+  border-radius: var(--spm-radius);
+  box-shadow: var(--spm-shadow);
+  backdrop-filter: blur(22px) saturate(1.3);
+  -webkit-backdrop-filter: blur(22px) saturate(1.3);
+  animation: spm-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1);
+  overscroll-behavior: contain;
+}
+
+#spm-root .spm-card::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes spm-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+#spm-root .spm-glow {
+  position: absolute;
+  inset: -40px -40px auto -40px;
+  height: 220px;
+  background:
+    radial-gradient(60% 80% at 50% 0%, rgba(30, 215, 96, 0.14), transparent 70%),
+    radial-gradient(50% 60% at 80% 20%, rgba(120, 90, 255, 0.12), transparent 70%);
+  pointer-events: none;
+}
+
+/* ---------- Header ---------- */
+
+#spm-root .spm-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#spm-root .spm-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--spm-muted);
+}
+
+#spm-root .spm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--spm-faint);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+#spm-root.spm-playing .spm-dot {
+  background: var(--spm-green);
+  box-shadow: 0 0 10px rgba(30, 215, 96, 0.9);
+  animation: spm-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes spm-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.75);
+    opacity: 0.7;
+  }
+}
+
+/* ---------- Buttons (shared) ---------- */
+
+#spm-root button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#spm-root button:focus-visible {
+  outline: 2px solid var(--spm-green);
+  outline-offset: 3px;
+  border-radius: 12px;
+}
+
+#spm-root .spm-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--spm-muted);
+  transition: color 0.18s, background 0.18s, transform 0.12s;
+}
+
+#spm-root .spm-icon-btn:hover {
+  color: var(--spm-text);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+#spm-root .spm-icon-btn:active {
+  transform: scale(0.9);
+}
+
+#spm-root .spm-icon-btn.spm-active {
+  color: var(--spm-green);
+}
+
+#spm-root .spm-collapse.spm-flip svg {
+  transform: rotate(180deg);
+}
+
+#spm-root .spm-collapse svg {
+  transition: transform 0.25s;
+}
+
+/* ---------- Artwork ---------- */
+
+#spm-root .spm-artwrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #23232e, #14141b);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+#spm-root .spm-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+#spm-root .spm-art.spm-loaded {
+  opacity: 1;
+}
+
+#spm-root .spm-art-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.22);
+}
+
+/* ---------- Title row ---------- */
+
+#spm-root .spm-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 2px 4px;
+}
+
+#spm-root .spm-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+#spm-root .spm-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-artist {
+  margin: 3px 0 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--spm-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-like.spm-liked {
+  color: var(--spm-green);
+}
+
+#spm-root .spm-like.spm-liked:hover {
+  color: var(--spm-green);
+}
+
+/* ---------- Progress ---------- */
+
+#spm-root .spm-progress {
+  margin-top: 10px;
+  padding: 6px 2px 2px;
+}
+
+#spm-root .spm-bar {
+  position: relative;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 8px;
+}
+
+#spm-root .spm-track {
+  position: relative;
+  height: 5px;
+  width: 100%;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+#spm-root .spm-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #f5f3ee, #d9d4c7);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+#spm-root.spm-playing .spm-fill {
+  background: linear-gradient(90deg, var(--spm-green), #a7f3c7);
+}
+
+#spm-root .spm-knob {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.18s, transform 0.18s;
+  pointer-events: none;
+}
+
+#spm-root .spm-bar:hover .spm-knob,
+#spm-root .spm-bar:active .spm-knob,
+#spm-root .spm-bar:focus-visible .spm-knob {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+@media (hover: none) {
+  #spm-root .spm-knob {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+}
+
+#spm-root .spm-times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--spm-faint);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- Main controls ---------- */
+
+#spm-root .spm-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+#spm-root .spm-skip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  color: var(--spm-accent);
+  transition: background 0.18s, transform 0.12s;
+}
+
+#spm-root .spm-skip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#spm-root .spm-skip:active {
+  transform: scale(0.88);
+}
+
+#spm-root .spm-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: #f5f3ee;
+  color: #0b0b0f;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+  transition: transform 0.12s, box-shadow 0.2s, background 0.2s;
+}
+
+#spm-root .spm-play:hover {
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(30, 215, 96, 0.25), 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+#spm-root .spm-play:active {
+  transform: scale(0.93);
+}
+
+#spm-root .spm-repeat {
+  position: relative;
+}
+
+#spm-root .spm-repeat .spm-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 99px;
+  background: var(--spm-green);
+  color: #06130b;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  text-align: center;
+}
+
+#spm-root .spm-repeat.spm-repeat-one .spm-badge {
+  display: block;
+}
+
+#spm-root .spm-press {
+  animation: spm-press 0.18s ease;
+}
+
+@keyframes spm-press {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(0.86);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ---------- Secondary row ---------- */
+
+#spm-root .spm-sub {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+#spm-root .spm-chip {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--spm-muted);
+  font-size: 12px;
+  font-weight: 650;
+  transition: background 0.18s, color 0.18s, transform 0.12s;
+}
+
+#spm-root .spm-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--spm-text);
+}
+
+#spm-root .spm-chip:active {
+  transform: scale(0.96);
+}
+
+/* ---------- Volume ---------- */
+
+#spm-root .spm-vol {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 0 2px;
+}
+
+#spm-root .spm-vol .spm-icon-btn {
+  width: 38px;
+  height: 38px;
+}
+
+#spm-root .spm-vol-slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+  cursor: pointer;
+}
+
+#spm-root .spm-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}
+
+#spm-root .spm-vol-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+}
+
+#spm-root .spm-status {
+  min-height: 16px;
+  margin: 8px 2px 0;
+  font-size: 11.5px;
+  color: var(--spm-faint);
+  text-align: center;
+}
+
+/* ---------- Collapsed FAB ---------- */
+
+#spm-root .spm-fab {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(var(--spm-vw) - 40px);
+  padding: 8px 14px 8px 8px;
+  border-radius: 99px;
+  background: var(--spm-bg);
+  border: 1px solid var(--spm-card-border);
+  box-shadow: var(--spm-shadow);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  color: var(--spm-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+#spm-root .spm-fab-art {
+  display: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #222;
+}
+
+#spm-root .spm-fab-play {
+  display: inline-flex;
+  color: var(--spm-text);
+}
+
+#spm-root.spm-collapsed .spm-card {
+  display: none;
+}
+
+#spm-root.spm-collapsed .spm-fab {
+  display: inline-flex;
+  animation: spm-in 0.3s ease;
+}
+
+/* ---------- Narrow screens: bottom-sheet ----------
+ *
+ * The @media rule below covers desktop narrow windows (layout viewport is
+ * the visible one there). The .spm-sheet rules mirror it for phones where
+ * Spotify forces a WIDE desktop layout viewport: the query would never
+ * match, so ui.js toggles .spm-sheet from the measured VISIBLE width
+ * instead. Widths use --spm-vw/--spm-vh (visible px); after --spm-zoom is
+ * applied those render as the full physical screen. */
+
+#spm-root.spm-sheet {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#spm-root.spm-sheet .spm-card {
+  pointer-events: auto;
+  width: var(--spm-vw);
+  max-width: 100%;
+  max-height: calc(var(--spm-vh) - 12px);
+  border-radius: 22px 22px 0 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+}
+
+#spm-root.spm-sheet.spm-collapsed {
+  right: 12px;
+  bottom: 12px;
+  left: auto;
+  pointer-events: auto;
+}
+
+@media (max-width: 640px) {
+  #spm-root {
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  #spm-root .spm-card {
+    pointer-events: auto;
+    width: 100%;
+    max-height: 92vh;
+    border-radius: 22px 22px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  #spm-root.spm-collapsed {
+    right: 12px;
+    bottom: 12px;
+    left: auto;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #spm-root .spm-card,
+  #spm-root .spm-art,
+  #spm-root .spm-icon-btn,
+  #spm-root .spm-play,
+  #spm-root .spm-skip {
+    animation: none;
+    transition: none;
+  }
+}
