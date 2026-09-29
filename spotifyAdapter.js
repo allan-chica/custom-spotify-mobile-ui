@@ -456,8 +456,8 @@
    *     no DOM scraping needed. This is what feeds OS/Chrome media hubs.
    *  2. The persistent player bar widget (img[data-testid="cover-art-image"],
    *     typically rendered ~64px, often a low-res file).
-   *  3. The "Now Playing View" sidebar/panel (NPV_Panel_OpenDiv or an
-   *     aside/section labelled "Now playing") — rendered much larger.
+   *  3. The "Now Playing View" cover (img[data-testid="cover-art-image"]
+   *     inside NPV_Panel_OpenDiv) — rendered much larger.
    *  4. Any other i.scdn.co/image/ <img> in the document (entity headers,
    *     cards…). These are NOT trusted unless their URL matches an image
    *     already confirmed as the current track's (same file = same pixels).
@@ -465,15 +465,22 @@
    * Rules: never rewrite/fabricate image URLs (i.scdn.co URLs carry no size
    * parameter, so guessing variants would be upscaling by another name).
    * Only rank URLs Spotify actually provided. Prefer srcset's largest entry.
-   * Selection is pinned per track so late-loading images can't cause
-   * mid-track flicker; a Strictly-larger newcomer may still upgrade the pin.
+   *
+   * STABILITY (learned the hard way): the NPV panel also contains big
+   * ARTIST photos ("About the artist"). Those must never become candidates,
+   * so the panel contributes ONLY cover-art-testid images — never a generic
+   * <img> fallback. Selection pins the FIRST cover per track: during the
+   * first seconds (page still loading, mediaSession/NPV arriving late) a
+   * better source may still win; afterwards the pin freezes so a late,
+   * larger artist variant can never steal the slot mid-track.
    */
 
   var FULL_SWEEP_TTL_MS = 15000;
+  var ART_UPGRADE_WINDOW_MS = 10000;
   var lastArtKey = "";
   var lastFullSweepAt = 0;
   var lastQuickSig = "";
-  var artPin = { key: "", url: "" };
+  var artPin = { key: "", url: "", pinnedAt: 0 };
 
   function parseSizesWidth(s) {
     var m = String(s || "").match(/(\d+)\s*[x\u00d7]\s*(\d+)/);
@@ -585,19 +592,33 @@
     }
   }
 
+  // Cover-art images under a root. The player bar is track-specific (no
+  // artist photos live there), so a generic <img> fallback is safe for it.
+  // The NPV panel is NOT: it embeds artist photography, so it contributes
+  // strictly cover-art-testid images or nothing at all.
+  function coverImgs(root, cap, allowFallback) {
+    var byTestid = queryAllCapped(
+      root,
+      'img[data-testid="' + TESTIDS.coverArt + '"]',
+      cap
+    );
+    if (byTestid.length || !allowFallback) return byTestid;
+    return queryAllCapped(root, "img", cap);
+  }
+
   // Quick sweep: cheap scoped lookups, safe to run on every snapshot.
   function quickArtworkRecords() {
     var recs = mediaSessionCandidates();
     var root = findPlayer();
     if (root) {
-      var imgs = queryAllCapped(root, "img", 10);
+      var imgs = coverImgs(root, 10, true);
       for (var i = 0; i < imgs.length; i++) {
         recs.push(imgRecord(imgs[i], "now-playing-bar", false));
       }
     }
     var panel = findNowPlayingPanel();
     if (panel && panel !== root) {
-      var pimgs = queryAllCapped(panel, "img", 10);
+      var pimgs = coverImgs(panel, 10, false);
       for (var j = 0; j < pimgs.length; j++) {
         recs.push(imgRecord(pimgs[j], "now-playing-view", false));
       }
@@ -664,9 +685,10 @@
   }
 
   function sourcePriority(rec) {
-    if (!rec.confirmed) return 0;
+    // mediaSession is authoritative track art with a DOM-churn-proof URL.
+    if (rec.source.indexOf("mediaSession") === 0) return 4;
     if (rec.source.indexOf("now-playing") === 0) return 3;
-    if (rec.source.indexOf("mediaSession") === 0) return 2;
+    if (!rec.confirmed) return 0;
     return 1;
   }
 
@@ -699,6 +721,7 @@
 
   function selectBestArtwork() {
     var key = currentTrackKey();
+    var hasTrack = key !== " | ";
     var now = Date.now();
     var quick = quickArtworkRecords();
     var sig = "";
@@ -713,28 +736,38 @@
     if (needFull) {
       recs = fullArtworkRecords();
       lastFullSweepAt = now;
-      lastArtKey = key;
+      if (hasTrack) lastArtKey = key;
     }
     lastQuickSig = sig;
     var ranked = rankArtwork(recs);
-    if (!ranked.length) return { url: "", recs: recs };
-    var best = ranked[0];
-    // Pin per track: keep the pinned URL unless the track changed or a
-    // strictly-larger newcomer appeared (avoids load-order flicker).
-    if (artPin.key === key && artPin.url) {
-      var pinnedRank = -1;
-      for (var j = 0; j < ranked.length; j++) {
-        if (ranked[j].url === artPin.url) {
-          pinnedRank = ranked[j].rank;
-          break;
-        }
-      }
-      if (pinnedRank >= 0 && !(best.rank > pinnedRank * 1.25 && best.url !== artPin.url)) {
+    if (!ranked.length) {
+      // Transient DOM gap: keep showing the pin rather than blanking.
+      return { url: artPin.url || "", recs: recs };
+    }
+    // Empty/transient key (React mid-swap): never (re)pin, keep the pin.
+    if (!hasTrack) {
+      return { url: artPin.url || ranked[0].url, recs: recs };
+    }
+    // First sighting of this track: pin the best available right away.
+    if (artPin.key !== key) {
+      artPin = { key: key, url: ranked[0].url, pinnedAt: now };
+      return { url: ranked[0].url, recs: recs };
+    }
+    // Same track, page still loading (mediaSession/NPV arrive late):
+    // a better source may still win. Afterwards the pin freezes, so a
+    // late larger artist variant can never steal the slot mid-track.
+    if (now - artPin.pinnedAt < ART_UPGRADE_WINDOW_MS) {
+      artPin.url = ranked[0].url;
+      return { url: ranked[0].url, recs: recs };
+    }
+    for (var j = 0; j < ranked.length; j++) {
+      if (ranked[j].url === artPin.url) {
         return { url: artPin.url, recs: recs };
       }
     }
-    artPin = { key: key, url: best.url };
-    return { url: best.url, recs: recs };
+    // Pinned URL vanished entirely (rare): re-pin the fresh best.
+    artPin.url = ranked[0].url;
+    return { url: ranked[0].url, recs: recs };
   }
 
   /**

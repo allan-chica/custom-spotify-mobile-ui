@@ -71,6 +71,18 @@ claims second. Full document sweeps run only on track change, when the
 candidate set changes, or every 15s — snapshots otherwise use cheap scoped
 lookups, so no layout thrash from per-second progress mutations.
 
+Stability rules (added after a real bug where the cover flipped to a same-
+artist variant mid-track):
+
+- The NPV panel contributes ONLY `img[data-testid="cover-art-image"]` — its
+  "About the artist" photos are never candidates. (The player bar keeps a
+  generic `<img>` fallback since no artist photos live there.)
+- Rank ties prefer `mediaSession` (authoritative track art, DOM-churn-proof).
+- First cover per track is pinned; for ~10s after a track change a better
+  source may still win (page still loading), then the pin freezes — a late,
+  larger artist variant can never steal the slot.
+- Empty/transient track keys (React mid-swap) never reset the pin.
+
 Diagnostic (devtools console on the Spotify tab):
 
 ```js
@@ -79,6 +91,17 @@ SpotMobile.spotify.getArtworkCandidates()
 //       renderedWidth, renderedHeight, alt, ancestors, rank, confirmed }]
 //    confirmed:false entries are context only, never auto-selected.
 ```
+
+## UI: dark "Current Track" concept
+
+`ui.js` + `style.css` implement the attached concept in dark mode: header
+with circular chevron/like buttons around a "Current Track" label, times
+above a blob-masked artwork ringed by a seekable progress loop (tap/drag
+the ring, or focus it and use arrows/Home/End), centered uppercase titles,
+controls in concept order (repeat, previous, play, next, shuffle) with a
+cream play button, a Lyrics row that opens Spotify's lyrics, and a slim
+Queue/Devices/volume aux row. No lyric text is faked — only real Spotify
+state is shown. All Spotify access still goes through the adapter.
 
 ## Mobile scaling: measured, not hardcoded
 

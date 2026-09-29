@@ -1,40 +1,52 @@
 /* Spotify Mobile Prototype — ui.js
  *
- * Custom mobile-style player UI. This file must ONLY talk to Spotify
- * through window.SpotMobile.spotify (the adapter). No direct
- * document.querySelector calls into Spotify's DOM are allowed here —
- * only queries scoped to our own container (root.querySelector).
+ * Custom mobile-style player UI (dark adaptation of the "Current Track"
+ * concept: header with circular buttons, times above a blob-masked artwork
+ * ringed by a seekable progress loop, centered titles, minimal controls,
+ * lyrics row). This file must ONLY talk to Spotify through
+ * window.SpotMobile.spotify (the adapter). No direct document.querySelector
+ * calls into Spotify's DOM are allowed here — only queries scoped to our
+ * own container (root.querySelector).
  */
 
 (function () {
   "use strict";
 
   var SVG = {
-    play: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>',
-    pause: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>',
-    next: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M6 6l8.5 6L6 18zM16 6h2v12h-2z"/></svg>',
-    prev: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M18 6l-8.5 6L18 18zM6 6h2v12H6z"/></svg>',
+    play: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>',
+    next: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M7 6l8 6-8 6z"/></svg>',
+    prev: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M17 6l-8 6 8 6z"/></svg>',
     shuffle:
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>',
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>',
     repeat:
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>',
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>',
     heart:
-      '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
     heartFill:
-      '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
     volume:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 010 7"/></svg>',
     mute:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
     queue:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
-    mic: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0"/><line x1="12" y1="17" x2="12" y2="22"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
     devices:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
-    chevron:
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>',
-    note: '<svg viewBox="0 0 24 24" width="44" height="44" fill="currentColor" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
+    chevLeft:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg>',
+    expand:
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>',
+    note: '<svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
   };
+
+  // Organic blob loop the progress ring follows (viewBox 240x240, starts at
+  // top, winds clockwise so angle-seek math matches the stroke direction).
+  var RING_PATH =
+    "M120,24 C150,24 168,32 182,52 C196,72 200,86 197,106 " +
+    "C194,130 203,144 192,164 C181,184 157,197 133,199 " +
+    "C109,201 83,207 63,192 C43,177 29,157 30,131 " +
+    "C31,105 19,91 27,69 C35,47 53,39 73,31 C89,25 103,24 120,24 Z";
 
   function formatTime(totalSeconds) {
     var s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -60,44 +72,47 @@
       '<div class="spm-card" role="region" aria-label="Mobile player">' +
       '<div class="spm-glow" aria-hidden="true"></div>' +
       '<header class="spm-top">' +
-      '<div class="spm-live"><span class="spm-dot"></span><span class="spm-live-text">Now playing</span></div>' +
-      '<button class="spm-icon-btn spm-collapse" type="button" aria-label="Minimize player">' +
-      SVG.chevron +
+      '<button class="spm-circle spm-collapse" type="button" aria-label="Minimize player">' +
+      SVG.chevLeft +
+      "</button>" +
+      '<div class="spm-top-title">Current Track</div>' +
+      '<button class="spm-circle spm-like" type="button" aria-label="Add to Liked Songs" aria-pressed="false">' +
+      SVG.heart +
       "</button>" +
       "</header>" +
-      '<div class="spm-artwrap">' +
+      '<div class="spm-times"><span class="spm-cur">0:00</span><span class="spm-sep">|</span><span class="spm-dur">0:00</span></div>' +
+      '<div class="spm-stage">' +
+      '<svg class="spm-ring" viewBox="0 0 240 240" aria-hidden="true">' +
+      '<path class="spm-ring-track" d="' + RING_PATH + '"/>' +
+      '<path class="spm-ring-fill" d="' + RING_PATH + '"/>' +
+      '<circle class="spm-ring-dot" r="5" cx="120" cy="24"/>' +
+      "</svg>" +
+      '<div class="spm-ring-hit" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>' +
+      '<div class="spm-blob">' +
       '<img class="spm-art" alt="Album artwork" />' +
       '<div class="spm-art-fallback" aria-hidden="true">' + SVG.note + "</div>" +
       "</div>" +
-      '<div class="spm-meta">' +
+      "</div>" +
       '<div class="spm-titles"><h2 class="spm-title">Nothing playing</h2>' +
       '<p class="spm-artist">Open Spotify and press play</p></div>' +
-      '<button class="spm-icon-btn spm-like" type="button" aria-label="Add to Liked Songs" aria-pressed="false">' +
-      SVG.heart +
-      "</button>" +
-      "</div>" +
-      '<div class="spm-progress">' +
-      '<div class="spm-bar" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
-      '<div class="spm-track"><div class="spm-fill"></div></div>' +
-      '<div class="spm-knob"></div>' +
-      "</div>" +
-      '<div class="spm-times"><span class="spm-cur">0:00</span><span class="spm-dur">0:00</span></div>' +
-      "</div>" +
       '<div class="spm-main">' +
-      '<button class="spm-icon-btn spm-shuffle" type="button" aria-label="Enable shuffle" aria-pressed="false">' + SVG.shuffle + "</button>" +
-      '<button class="spm-skip spm-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
+      '<button class="spm-mini spm-repeat" type="button" aria-label="Enable repeat" aria-pressed="false">' + SVG.repeat + '<span class="spm-badge">1</span></button>' +
+      '<button class="spm-mini spm-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
       '<button class="spm-play" type="button" aria-label="Play">' + SVG.play + "</button>" +
-      '<button class="spm-skip spm-next" type="button" aria-label="Next">' + SVG.next + "</button>" +
-      '<button class="spm-icon-btn spm-repeat" type="button" aria-label="Enable repeat" aria-pressed="false">' + SVG.repeat + '<span class="spm-badge">1</span></button>' +
+      '<button class="spm-mini spm-next" type="button" aria-label="Next">' + SVG.next + "</button>" +
+      '<button class="spm-mini spm-shuffle" type="button" aria-label="Enable shuffle" aria-pressed="false">' + SVG.shuffle + "</button>" +
       "</div>" +
-      '<div class="spm-sub">' +
-      '<button class="spm-chip spm-lyrics" type="button" aria-label="Lyrics">' + SVG.mic + "<span>Lyrics</span></button>" +
-      '<button class="spm-chip spm-queue" type="button" aria-label="Queue">' + SVG.queue + "<span>Queue</span></button>" +
-      '<button class="spm-chip spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
+      '<div class="spm-lyrics">' +
+      "<span>Lyrics</span>" +
+      '<button class="spm-expand spm-lyrics-open" type="button" aria-label="Open lyrics in Spotify">' + SVG.expand + "</button>" +
       "</div>" +
+      '<div class="spm-aux">' +
+      '<button class="spm-ghost spm-queue" type="button" aria-label="Queue">' + SVG.queue + "<span>Queue</span></button>" +
+      '<button class="spm-ghost spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
       '<div class="spm-vol">' +
-      '<button class="spm-icon-btn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
+      '<button class="spm-voltbtn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
       '<input class="spm-vol-slider" type="range" min="0" max="100" value="100" aria-label="Volume" />' +
+      "</div>" +
       "</div>" +
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
@@ -110,7 +125,6 @@
     var q = function (sel) {
       return root.querySelector(sel);
     };
-    var card = q(".spm-card");
     var fab = q(".spm-fab");
     var art = q(".spm-art");
     var artFallback = q(".spm-art-fallback");
@@ -122,16 +136,17 @@
     var nextBtn = q(".spm-next");
     var shuffleBtn = q(".spm-shuffle");
     var repeatBtn = q(".spm-repeat");
-    var bar = q(".spm-bar");
-    var fill = q(".spm-fill");
-    var knob = q(".spm-knob");
+    var ringSvg = q(".spm-ring");
+    var ringFill = q(".spm-ring-fill");
+    var ringDot = q(".spm-ring-dot");
+    var ringHit = q(".spm-ring-hit");
     var curEl = q(".spm-cur");
     var durEl = q(".spm-dur");
     var statusEl = q(".spm-status");
     var muteBtn = q(".spm-mute");
     var volSlider = q(".spm-vol-slider");
     var collapseBtn = q(".spm-collapse");
-    var lyricsBtn = q(".spm-lyrics");
+    var lyricsBtn = q(".spm-lyrics-open");
     var queueBtn = q(".spm-queue");
     var devicesBtn = q(".spm-devices");
     var fabArt = q(".spm-fab-art");
@@ -145,6 +160,7 @@
     var rafLastTick = 0;
     var currentArtwork = "";
     var envInfo = null;
+    var ringLen = 0;
 
     /* Responsive environment: on phones Spotify renders its desktop layout
      * in a wide layout viewport that is scaled down to fit the glass, which
@@ -190,7 +206,6 @@
       collapsed = next;
       root.classList.toggle("spm-collapsed", collapsed);
       collapseBtn.setAttribute("aria-label", collapsed ? "Expand player" : "Minimize player");
-      collapseBtn.classList.toggle("spm-flip", collapsed);
       try {
         localStorage.setItem("spm-collapsed", collapsed ? "1" : "0");
       } catch (e) {}
@@ -265,34 +280,64 @@
       muteBtn.innerHTML = v <= 0.01 ? SVG.mute : SVG.volume;
     });
 
-    // --- seek interaction (pointer + keyboard) ---
-    function ratioFromEvent(e) {
-      var r = bar.getBoundingClientRect();
-      var x = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : r.left);
-      return Math.max(0, Math.min(1, (x - r.left) / Math.max(1, r.width)));
+    // --- ring progress: measure once, paint cheaply, seek by angle ---
+    function measureRing() {
+      try {
+        if (ringFill && ringFill.getTotalLength) {
+          ringLen = ringFill.getTotalLength();
+          ringFill.style.strokeDasharray = String(ringLen);
+        }
+      } catch (e) {
+        ringLen = 0;
+      }
+    }
+
+    function dotAt(ratio) {
+      if (!ringLen || !ringDot) return;
+      try {
+        var pt = ringFill.getPointAtLength(Math.max(0, Math.min(1, ratio)) * ringLen);
+        ringDot.setAttribute("cx", pt.x.toFixed(1));
+        ringDot.setAttribute("cy", pt.y.toFixed(1));
+      } catch (e) {}
     }
 
     function renderBar(current, duration) {
       var ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
-      fill.style.transform = "scaleX(" + ratio + ")";
-      knob.style.left = ratio * 100 + "%";
-      bar.setAttribute("aria-valuemax", String(Math.round(duration)));
-      bar.setAttribute("aria-valuenow", String(Math.round(current)));
-      bar.setAttribute(
+      if (ringLen && ringFill) {
+        ringFill.style.strokeDashoffset = String(ringLen * (1 - ratio));
+      }
+      dotAt(ratio);
+      ringHit.setAttribute("aria-valuemax", String(Math.round(duration)));
+      ringHit.setAttribute("aria-valuenow", String(Math.round(current)));
+      ringHit.setAttribute(
         "aria-valuetext",
         formatTime(current) + " of " + formatTime(duration)
       );
     }
 
-    bar.addEventListener("pointerdown", function (e) {
+    // 0 at top, clockwise — matches the ring path's winding.
+    function ratioFromEvent(e) {
+      var r = ringSvg.getBoundingClientRect();
+      var cx = r.left + r.width / 2;
+      var cy = r.top + r.height / 2;
+      var px = e.clientX !== undefined ? e.clientX : cx;
+      var py = e.clientY !== undefined ? e.clientY : cy;
+      var a = Math.atan2(px - cx, -(py - cy)); // -PI..PI, 0 = top
+      return ((a / (2 * Math.PI)) + 1) % 1;
+    }
+
+    ringHit.addEventListener("pointerdown", function (e) {
       seeking = true;
-      bar.setPointerCapture && bar.setPointerCapture(e.pointerId);
+      try {
+        ringHit.setPointerCapture && ringHit.setPointerCapture(e.pointerId);
+      } catch (err) {}
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       seekPreview = ratioFromEvent(e) * dur;
       renderBar(seekPreview, dur);
+      if (curEl) curEl.textContent = formatTime(seekPreview);
       e.preventDefault();
     });
-    bar.addEventListener("pointermove", function (e) {
+    ringHit.addEventListener("pointermove", function (e) {
       if (!seeking) return;
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       seekPreview = ratioFromEvent(e) * dur;
@@ -311,11 +356,11 @@
         if (curEl) curEl.textContent = formatTime(target);
       }
     }
-    bar.addEventListener("pointerup", endSeek);
-    bar.addEventListener("pointercancel", function () {
+    ringHit.addEventListener("pointerup", endSeek);
+    ringHit.addEventListener("pointercancel", function () {
       seeking = false;
     });
-    bar.addEventListener("keydown", function (e) {
+    ringHit.addEventListener("keydown", function (e) {
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       var cur = (lastSnap && lastSnap.currentTime) || spotify.getCurrentTime() || 0;
       if (e.key === "ArrowRight") {
@@ -488,6 +533,7 @@
     var unsubscribe = null;
     function mount(parent) {
       (parent || document.body).appendChild(root);
+      measureRing();
       applyEnvironment();
       watchEnvironment();
       try {
