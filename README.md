@@ -156,8 +156,10 @@ Mini-player + gestures:
   / "Saved to" count as saved), then the + icon's own shape (plus strokes
   vs check/filled glyph) as a last resort. If the heart still disagrees,
   run `SpotMobile.spotify.getLikeInfo()` in devtools and send the output.
-- Transitions are staged (mini sinks as the card rises and vice versa) with
-  shared artwork bridging the swap — never an abrupt display flip.
+- Transitions are a simple directional handoff: expanding sinks the mini
+  down and away while the fullscreen card rises up into place (and vice
+  versa), overlapping mid-flight with entry floors so coverage never hits
+  zero. No shared-element plumbing — deliberately simple, flicker-free.
   `prefers-reduced-motion` gets instant swaps.
 - EXPERIMENTAL glow progress: while playing, the white fill breathes with
   a soft outward bloom (above/below the line, never into the empty track;

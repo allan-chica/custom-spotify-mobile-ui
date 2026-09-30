@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Spotify Mobile Player",
-  "version": "0.23.0",
+  "version": "0.26.0",
   "description": "Mobile-friendly player UI injected on top of the Spotify Web Player. Spotify keeps handling playback.",
   "content_scripts": [
     {

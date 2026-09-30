@@ -272,11 +272,9 @@
         setCollapsed(false);
         return;
       }
-      // Mini sinks away as the full card rises — shared artwork in both
-      // makes the handoff read as one continuous surface. The flip lands
-      // mid-sink (~60ms) so the entering card overlaps the leaving mini:
-      // sequential staging left a dead window with neither visible, which
-      // flashed the background.
+      // Simple directional handoff: the mini sinks down and away while the
+      // full card rises up into place (entry floors keep coverage above
+      // zero throughout, so no background flash).
       mini.classList.add("spm-leaving");
       transitionTimer = window.setTimeout(function () {
         transitionTimer = 0;
@@ -292,8 +290,8 @@
         setCollapsed(true);
         return;
       }
-      // Card starts sinking; the flip lands mid-sink (~60ms) so the
-      // blooming mini overlaps it — same dead-window fix as expand.
+      // Card sinks down and away; the flip lands mid-sink (~60ms) so the
+      // blooming mini overlaps it.
       cardEl.classList.add("spm-leaving-card");
       transitionTimer = window.setTimeout(function () {
         transitionTimer = 0;

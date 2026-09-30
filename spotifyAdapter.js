@@ -821,11 +821,23 @@
       return { url: ranked[0].url, recs: recs };
     }
     // Same track, page still loading (mediaSession/NPV arrive late):
-    // a better source may still win. Afterwards the pin freezes, so a
-    // late larger artist variant can never steal the slot mid-track.
+    // a better source may still win — but only a CLEARLY better one.
+    // Ranks wobble while images decode (naturalWidth 0 -> real), so freely
+    // re-pinning flip-flops between equivalent same-pixel URLs and the
+    // cover blinks in card AND mini simultaneously. Hysteresis: dethrone
+    // the pin only at 1.5x rank (a genuine resolution upgrade).
     if (now - artPin.pinnedAt < ART_UPGRADE_WINDOW_MS) {
-      artPin.url = ranked[0].url;
-      return { url: ranked[0].url, recs: recs };
+      var pinRank = -1;
+      for (var pj = 0; pj < ranked.length; pj++) {
+        if (ranked[pj].url === artPin.url) {
+          pinRank = ranked[pj].rank;
+          break;
+        }
+      }
+      if (pinRank < 0 || ranked[0].rank >= pinRank * 1.5) {
+        artPin.url = ranked[0].url;
+      }
+      return { url: artPin.url, recs: recs };
     }
     for (var j = 0; j < ranked.length; j++) {
       if (ranked[j].url === artPin.url) {
