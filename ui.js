@@ -14,39 +14,56 @@
 
   var SVG = {
     play: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>',
-    pause: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><rect x="6.4" y="5" width="4.2" height="14" rx="1.6"/><rect x="13.4" y="5" width="4.2" height="14" rx="1.6"/></svg>',
     next: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M7 6l8 6-8 6z"/></svg>',
     prev: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M17 6l-8 6 8 6z"/></svg>',
     shuffle:
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>',
+      '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>',
     repeat:
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>',
+      '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>',
     heart:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
     heartFill:
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>',
     volume:
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 010 7"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 010 7"/></svg>',
     mute:
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
     queue:
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
     devices:
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
     chevLeft:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg>',
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg>',
     expand:
-      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>',
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>',
     note: '<svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
   };
 
   // Organic blob loop the progress ring follows (viewBox 240x240, starts at
   // top, winds clockwise so angle-seek math matches the stroke direction).
+  // Generated (not hand-drawn): radius modulated by even-frequency cosines
+  // only, so the loop is symmetric about both axes and its bbox center is
+  // exactly (120,120) — the artwork blob and the ring share that center.
   var RING_PATH =
-    "M120,24 C150,24 168,32 182,52 C196,72 200,86 197,106 " +
-    "C194,130 203,144 192,164 C181,184 157,197 133,199 " +
-    "C109,201 83,207 63,192 C43,177 29,157 30,131 " +
-    "C31,105 19,91 27,69 C35,47 53,39 73,31 C89,25 103,24 120,24 Z";
+    "M120,26.4C125.4,26.4 130.9,27 136.2,28.1C141.5,29.2 146.7,30.9 151.7,32.9" +
+    "C156.7,34.8 161.5,37.3 166.2,40C170.9,42.6 175.3,45.6 179.7,48.8" +
+    "C184.1,52 188.4,55.4 192.5,59.2C196.5,63 200.6,67 204.2,71.4" +
+    "C207.8,75.8 211.3,80.6 214.1,85.8C216.8,90.9 219.3,96.5 220.8,102.2" +
+    "C222.3,107.9 223.2,114.1 223.2,120C223.2,125.9 222.3,132.1 220.8,137.8" +
+    "C219.3,143.5 216.8,149.1 214.1,154.2C211.3,159.4 207.8,164.2 204.2,168.6" +
+    "C200.6,173 196.5,177 192.5,180.8C188.4,184.6 184.1,188 179.7,191.2" +
+    "C175.3,194.4 170.9,197.4 166.2,200C161.5,202.7 156.7,205.2 151.7,207.1" +
+    "C146.7,209.1 141.5,210.8 136.2,211.9C130.9,213 125.4,213.6 120,213.6" +
+    "C114.6,213.6 109.1,213 103.8,211.9C98.5,210.8 93.3,209.1 88.3,207.1" +
+    "C83.3,205.2 78.5,202.7 73.8,200C69.1,197.4 64.7,194.4 60.3,191.2" +
+    "C55.9,188 51.6,184.6 47.5,180.8C43.5,177 39.4,173 35.8,168.6" +
+    "C32.2,164.2 28.7,159.4 25.9,154.2C23.2,149.1 20.7,143.5 19.2,137.8" +
+    "C17.7,132.1 16.8,125.9 16.8,120C16.8,114.1 17.7,107.9 19.2,102.2" +
+    "C20.7,96.5 23.2,90.9 25.9,85.8C28.7,80.6 32.2,75.8 35.8,71.4" +
+    "C39.4,67 43.5,63 47.5,59.2C51.6,55.4 55.9,52 60.3,48.8" +
+    "C64.7,45.6 69.1,42.6 73.8,40C78.5,37.3 83.3,34.8 88.3,32.9" +
+    "C93.3,30.9 98.5,29.2 103.8,28.1C109.1,27 114.6,26.4 120,26.4Z";
 
   function formatTime(totalSeconds) {
     var s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -85,7 +102,7 @@
       '<svg class="spm-ring" viewBox="0 0 240 240" aria-hidden="true">' +
       '<path class="spm-ring-track" d="' + RING_PATH + '"/>' +
       '<path class="spm-ring-fill" d="' + RING_PATH + '"/>' +
-      '<circle class="spm-ring-dot" r="5" cx="120" cy="24"/>' +
+      '<circle class="spm-ring-dot" r="5" cx="120" cy="26.4"/>' +
       "</svg>" +
       '<div class="spm-ring-hit" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>' +
       '<div class="spm-blob">' +
@@ -157,7 +174,6 @@
     var seekPreview = 0;
     var lastSnap = null;
     var rafId = 0;
-    var rafLastTick = 0;
     var currentArtwork = "";
     var envInfo = null;
     var ringLen = 0;
@@ -281,23 +297,77 @@
     });
 
     // --- ring progress: measure once, paint cheaply, seek by angle ---
+    // Smoothness design: Spotify-DOM reads (~1/sec + snapshots) only rebase
+    // an anchor; every animation frame paints the INTERPOLATED position, so
+    // the dot glides at 60fps instead of jumping at snapshot cadence. The
+    // hot loop does style writes only — no DOM reads, no layout.
+    var anchorTime = 0;
+    var anchorDur = 0;
+    var anchorStamp = 0;
+    var anchorPlaying = false;
+    var lastRebase = 0;
+    var lastAriaSec = -1;
+    var ringLUT = null;
+
+    function nowMs() {
+      try {
+        return performance.now();
+      } catch (e) {
+        return Date.now();
+      }
+    }
+
+    function rebase(time, dur, playing) {
+      anchorTime = time || 0;
+      anchorDur = dur || 0;
+      anchorPlaying = !!playing;
+      anchorStamp = nowMs();
+    }
+
+    function estimate() {
+      var est = anchorTime + (anchorPlaying ? (nowMs() - anchorStamp) / 1000 : 0);
+      if (anchorDur && est > anchorDur) est = anchorDur;
+      return est < 0 ? 0 : est;
+    }
+
     function measureRing() {
       try {
         if (ringFill && ringFill.getTotalLength) {
           ringLen = ringFill.getTotalLength();
           ringFill.style.strokeDasharray = String(ringLen);
+          // Lookup table: 121 samples around the loop; dotAt() lerps
+          // between neighbours instead of calling getPointAtLength per
+          // frame (cheaper, and immune to per-call rounding jitter).
+          ringLUT = [];
+          for (var i = 0; i <= 120; i++) {
+            var pt = ringFill.getPointAtLength((ringLen * i) / 120);
+            ringLUT.push([pt.x, pt.y]);
+          }
         }
       } catch (e) {
         ringLen = 0;
+        ringLUT = null;
       }
     }
 
     function dotAt(ratio) {
-      if (!ringLen || !ringDot) return;
+      if (!ringDot) return;
+      var r = Math.max(0, Math.min(1, ratio));
       try {
-        var pt = ringFill.getPointAtLength(Math.max(0, Math.min(1, ratio)) * ringLen);
-        ringDot.setAttribute("cx", pt.x.toFixed(1));
-        ringDot.setAttribute("cy", pt.y.toFixed(1));
+        if (ringLUT && ringLUT.length === 121) {
+          var pos = r * 120;
+          var i0 = Math.floor(pos);
+          var i1 = Math.min(120, i0 + 1);
+          var f = pos - i0;
+          var ax = ringLUT[i0][0];
+          var ay = ringLUT[i0][1];
+          ringDot.setAttribute("cx", (ax + (ringLUT[i1][0] - ax) * f).toFixed(1));
+          ringDot.setAttribute("cy", (ay + (ringLUT[i1][1] - ay) * f).toFixed(1));
+        } else if (ringLen && ringFill.getPointAtLength) {
+          var pt = ringFill.getPointAtLength(r * ringLen);
+          ringDot.setAttribute("cx", pt.x.toFixed(1));
+          ringDot.setAttribute("cy", pt.y.toFixed(1));
+        }
       } catch (e) {}
     }
 
@@ -307,12 +377,18 @@
         ringFill.style.strokeDashoffset = String(ringLen * (1 - ratio));
       }
       dotAt(ratio);
-      ringHit.setAttribute("aria-valuemax", String(Math.round(duration)));
-      ringHit.setAttribute("aria-valuenow", String(Math.round(current)));
-      ringHit.setAttribute(
-        "aria-valuetext",
-        formatTime(current) + " of " + formatTime(duration)
-      );
+      // ARIA churn feeds MutationObservers (and screen readers); 1Hz is
+      // plenty, the visuals already move every frame.
+      var sec = Math.round(current);
+      if (sec !== lastAriaSec) {
+        lastAriaSec = sec;
+        ringHit.setAttribute("aria-valuemax", String(Math.round(duration)));
+        ringHit.setAttribute("aria-valuenow", String(sec));
+        ringHit.setAttribute(
+          "aria-valuetext",
+          formatTime(current) + " of " + formatTime(duration)
+        );
+      }
     }
 
     // 0 at top, clockwise — matches the ring path's winding.
@@ -468,7 +544,12 @@
         setStatus("");
       }
 
-      // (Re)start the lightweight progress ticker.
+      // (Re)start the smooth progress ticker.
+      rebase(
+        snap.currentTime || 0,
+        snap.duration || 0,
+        !!(snap.isPlaying && snap.playerReady)
+      );
       if (snap.isPlaying && !rafId && snap.playerReady) startTicker();
       if ((!snap.isPlaying || !snap.playerReady) && !seeking) {
         renderBar(snap.currentTime || 0, snap.duration || 0);
@@ -480,36 +561,36 @@
       art.classList.add("spm-loaded");
     });
 
-    // Lightweight progress loop: rAF-throttled to ~4fps, reads via adapter
-    // getters (cheap scoped queries) and only touches text/DOM on change.
+    // Smooth progress loop: paints the interpolated estimate EVERY frame
+    // (style writes only), rebasing against Spotify ~1/sec to kill drift.
+    // Track changes are picked up on the rebase beat.
     function startTicker() {
       if (rafId) return;
-      rafLastTick = 0;
       function frame(ts) {
-        if (!lastSnap || !lastSnap.isPlaying || seeking) {
-          // Keep the loop alive briefly while seeking so release paints fast.
-          if (seeking && lastSnap && lastSnap.isPlaying) {
-            rafId = requestAnimationFrame(frame);
-            return;
-          }
+        if (seeking) {
+          // Finger down: the drag handlers paint; keep looping for release.
+          rafId = requestAnimationFrame(frame);
+          return;
+        }
+        if (!lastSnap || !anchorPlaying) {
           rafId = 0;
           return;
         }
-        if (ts - rafLastTick > 250) {
-          rafLastTick = ts;
-          var cur = 0;
-          var dur = lastSnap.duration || 0;
+        var est = estimate();
+        renderBar(est, anchorDur);
+        var t = formatTime(est);
+        if (curEl.textContent !== t) curEl.textContent = t;
+        if (ts - lastRebase > 1000) {
+          lastRebase = ts;
+          var cur = est;
+          var dur = anchorDur;
           try {
             cur = spotify.getCurrentTime() || 0;
             var d2 = spotify.getDuration() || 0;
             if (d2) dur = d2;
           } catch (e) {}
-          // Track ended / Spotify jumped: let the snapshot correct metadata.
           if (dur && cur > dur) cur = dur;
-          renderBar(cur, dur);
-          var t = formatTime(cur);
-          if (curEl.textContent !== t) curEl.textContent = t;
-          // Detect track change promptly even between MutationObserver beats.
+          rebase(cur, dur, true);
           var freshTrack = "";
           try {
             freshTrack = spotify.getCurrentTrack() || "";
@@ -518,6 +599,10 @@
             try {
               render(spotify.getSnapshot());
             } catch (e) {}
+          }
+          if (!lastSnap || !lastSnap.isPlaying) {
+            rafId = 0;
+            return;
           }
         }
         rafId = requestAnimationFrame(frame);
@@ -564,6 +649,12 @@
           if (rafId) cancelAnimationFrame(rafId);
           rafId = 0;
         } else if (lastSnap && lastSnap.isPlaying) {
+          // Re-anchor immediately: the estimate went stale while hidden
+          // (Spotify kept playing), so don't paint it for a beat.
+          try {
+            rebase(spotify.getCurrentTime() || 0, spotify.getDuration() || 0, true);
+            renderBar(estimate(), anchorDur);
+          } catch (e) {}
           startTicker();
         }
       });

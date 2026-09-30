@@ -103,6 +103,21 @@ cream play button, a Lyrics row that opens Spotify's lyrics, and a slim
 Queue/Devices/volume aux row. No lyric text is faked — only real Spotify
 state is shown. All Spotify access still goes through the adapter.
 
+Notes on the concept adaptation:
+
+- The progress loop is a generated symmetric blob (even-frequency cosine
+  modulation, bbox center exactly on the artwork center), seekable by
+  tap/drag angle plus keyboard. Playback paints an interpolated estimate
+  every animation frame (rebased against Spotify ~1/sec), so the dot glides
+  instead of stepping at snapshot cadence; ARIA updates stay at 1Hz.
+- Icons are redrawn thin (1.5px strokes, plain triangles, rounded pause
+  bars) to match the reference's delicate line style.
+- The card follows the OS/browser theme automatically via
+  `prefers-color-scheme`: dark by default, the reference cream in light
+  mode. Same geometry, palette-only swap, no reload needed.
+- Aux-row leading edge aligns with the Lyrics label; stage/ring/blob share
+  one center axis.
+
 ## Mobile scaling: measured, not hardcoded
 
 On phones (Quetta Android) Spotify serves its DESKTOP layout in a wide

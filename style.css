@@ -9,10 +9,16 @@
   --spm-bg: rgba(17, 18, 20, 0.92);
   --spm-card-border: rgba(244, 241, 234, 0.1);
   --spm-cream: #f4f1ea;
+  --spm-solid: #f4f1ea;
+  --spm-on-solid: #101112;
   --spm-text: #f4f1ea;
   --spm-muted: rgba(244, 241, 234, 0.55);
   --spm-faint: rgba(244, 241, 234, 0.32);
   --spm-line: rgba(244, 241, 234, 0.14);
+  --spm-line-strong: rgba(244, 241, 234, 0.35);
+  --spm-hover: rgba(244, 241, 234, 0.07);
+  --spm-ring-track: rgba(244, 241, 234, 0.16);
+  --spm-dot-ring: #101112;
   --spm-green: #1ed760;
   --spm-radius: 28px;
   --spm-shadow: 0 24px 70px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.4);
@@ -95,7 +101,7 @@
 
 #spm-root button:focus-visible,
 #spm-root .spm-ring-hit:focus-visible {
-  outline: 2px solid var(--spm-cream);
+  outline: 2px solid currentColor;
   outline-offset: 3px;
   border-radius: 12px;
 }
@@ -115,7 +121,7 @@
 
 #spm-root .spm-circle:hover {
   color: var(--spm-cream);
-  border-color: rgba(244, 241, 234, 0.35);
+  border-color: var(--spm-line-strong);
 }
 
 #spm-root .spm-circle:active {
@@ -125,7 +131,7 @@
 #spm-root .spm-circle.spm-liked {
   color: var(--spm-cream);
   border-color: rgba(244, 241, 234, 0.45);
-  background: rgba(244, 241, 234, 0.08);
+  background: var(--spm-hover);
 }
 
 /* ---------- Header ---------- */
@@ -200,18 +206,18 @@
 }
 
 #spm-root .spm-ring-track {
-  stroke: rgba(244, 241, 234, 0.16);
+  stroke: var(--spm-ring-track);
   stroke-width: 1.4;
 }
 
 #spm-root .spm-ring-fill {
-  stroke: var(--spm-cream);
+  stroke: var(--spm-solid);
   stroke-width: 2;
 }
 
 #spm-root .spm-ring-dot {
-  fill: var(--spm-cream);
-  stroke: #101112;
+  fill: var(--spm-solid);
+  stroke: var(--spm-dot-ring);
   stroke-width: 1.5;
 }
 
@@ -227,7 +233,7 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 64%;
+  width: 70%;
   aspect-ratio: 1 / 1;
   transform: translate(-50%, -50%);
   overflow: hidden;
@@ -330,8 +336,8 @@
   height: 14px;
   padding: 0 3px;
   border-radius: 99px;
-  background: var(--spm-cream);
-  color: #101112;
+  background: var(--spm-solid);
+  color: var(--spm-on-solid);
   font-size: 9px;
   font-weight: 800;
   line-height: 14px;
@@ -349,8 +355,8 @@
   width: 66px;
   height: 66px;
   border-radius: 50%;
-  background: var(--spm-cream);
-  color: #101112;
+  background: var(--spm-solid);
+  color: var(--spm-on-solid);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
   transition: transform 0.12s, box-shadow 0.2s;
 }
@@ -407,7 +413,7 @@
 
 #spm-root .spm-expand:hover {
   color: var(--spm-cream);
-  background: rgba(244, 241, 234, 0.07);
+  background: var(--spm-hover);
 }
 
 #spm-root .spm-expand:active {
@@ -437,9 +443,15 @@
   transition: color 0.18s, background 0.18s;
 }
 
+/* First button's icon aligns with the "Lyrics" label above (no stray
+ * left padding on the row's leading edge). */
+#spm-root .spm-ghost:first-child {
+  padding-left: 2px;
+}
+
 #spm-root .spm-ghost:hover {
   color: var(--spm-cream);
-  background: rgba(244, 241, 234, 0.06);
+  background: var(--spm-hover);
 }
 
 #spm-root .spm-vol {
@@ -483,7 +495,7 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: var(--spm-cream);
+  background: var(--spm-solid);
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
 }
 
@@ -492,7 +504,7 @@
   height: 12px;
   border: none;
   border-radius: 50%;
-  background: var(--spm-cream);
+  background: var(--spm-solid);
 }
 
 #spm-root .spm-status {
@@ -626,5 +638,56 @@
   #spm-root .spm-mini {
     animation: none;
     transition: none;
+  }
+}
+
+/* ---------- Light system theme: the reference cream ----------
+ * Follows the OS/browser color scheme automatically (and live: flipping
+ * the system theme repaints the card with no reload). Same layout, same
+ * geometry — only the palette swaps to the concept's cream-on-ink. */
+@media (prefers-color-scheme: light) {
+  #spm-root {
+    --spm-bg: rgba(244, 241, 234, 0.94);
+    --spm-card-border: rgba(20, 20, 18, 0.12);
+    --spm-solid: #171715;
+    --spm-on-solid: #f4f1ea;
+    --spm-text: #171715;
+    --spm-muted: rgba(23, 23, 21, 0.6);
+    --spm-faint: rgba(23, 23, 21, 0.38);
+    --spm-line: rgba(23, 23, 21, 0.16);
+    --spm-line-strong: rgba(23, 23, 21, 0.4);
+    --spm-hover: rgba(23, 23, 21, 0.07);
+    --spm-ring-track: rgba(23, 23, 21, 0.18);
+    --spm-dot-ring: #f4f1ea;
+    --spm-shadow: 0 24px 70px rgba(30, 25, 15, 0.28), 0 2px 10px rgba(30, 25, 15, 0.18);
+  }
+
+  #spm-root .spm-glow {
+    background: radial-gradient(60% 80% at 50% 0%, rgba(20, 20, 18, 0.08), transparent 70%);
+  }
+
+  #spm-root .spm-blob {
+    background: linear-gradient(145deg, #e6e1d3, #d5cfbd);
+    box-shadow: 0 18px 44px rgba(60, 50, 30, 0.3);
+  }
+
+  #spm-root .spm-art-fallback {
+    color: rgba(23, 23, 21, 0.25);
+  }
+
+  #spm-root .spm-circle.spm-liked {
+    background: rgba(20, 20, 18, 0.07);
+  }
+
+  #spm-root .spm-play {
+    box-shadow: 0 12px 30px rgba(30, 25, 15, 0.4);
+  }
+
+  #spm-root .spm-play:hover {
+    box-shadow: 0 14px 34px rgba(30, 25, 15, 0.22), 0 12px 30px rgba(30, 25, 15, 0.4);
+  }
+
+  #spm-root .spm-vol-slider {
+    background: rgba(23, 23, 21, 0.18);
   }
 }
