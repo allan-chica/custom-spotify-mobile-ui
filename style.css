@@ -69,6 +69,12 @@
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
   animation: spm-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1);
   overscroll-behavior: contain;
+  /* None so collapse drags are never stolen mid-gesture (a vertical pan
+   * would hand the pointer to the page scroll and freeze the drag). All
+   * in-card gestures are custom pointer handlers; the volume slider is a
+   * custom bar for the same reason. Wheel scrolling still works. */
+  touch-action: none;
+  transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
 #spm-root .spm-card::-webkit-scrollbar {
@@ -508,34 +514,65 @@
   color: var(--spm-cream);
 }
 
-#spm-root .spm-vol-slider {
+/* Custom bar (not a native input): the card pins touch-action so collapse
+ * drags are never stolen, which would also pin a native range slider. */
+#spm-root .spm-vol-bar {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  height: 3px;
-  border-radius: 99px;
-  background: rgba(244, 241, 234, 0.16);
-  outline: none;
+  height: 28px;
+  display: flex;
+  align-items: center;
   cursor: pointer;
+  touch-action: none;
+  border-radius: 8px;
+  outline: none;
 }
 
-#spm-root .spm-vol-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+#spm-root .spm-vol-track {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  border-radius: 99px;
+  background: rgba(244, 241, 234, 0.16);
+  overflow: hidden;
+}
+
+#spm-root .spm-vol-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 99px;
+  background: var(--spm-solid);
+  transform-origin: left center;
+  transform: scaleX(1);
+}
+
+#spm-root .spm-vol-knob {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--spm-solid);
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.18s, transform 0.18s;
+  pointer-events: none;
 }
 
-#spm-root .spm-vol-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: none;
-  border-radius: 50%;
-  background: var(--spm-solid);
+#spm-root .spm-vol-bar:hover .spm-vol-knob,
+#spm-root .spm-vol-bar:active .spm-vol-knob,
+#spm-root .spm-vol-bar:focus-visible .spm-vol-knob {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+@media (hover: none) {
+  #spm-root .spm-vol-bar .spm-vol-knob {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
 }
 
 #spm-root .spm-status {
@@ -547,44 +584,213 @@
   text-align: center;
 }
 
-/* ---------- Collapsed FAB ---------- */
-
-#spm-root .spm-fab {
-  display: none;
-  align-items: center;
-  gap: 10px;
-  max-width: calc(var(--spm-vw) - 40px);
-  padding: 8px 16px 8px 8px;
-  border-radius: 99px;
-  background: var(--spm-bg);
-  border: 1px solid var(--spm-card-border);
-  box-shadow: var(--spm-shadow);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  color: var(--spm-text);
-}
-
-#spm-root .spm-fab-art {
-  display: none;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  object-fit: cover;
-  background: #222;
-}
-
-#spm-root .spm-fab-play {
-  display: inline-flex;
-  color: var(--spm-cream);
-}
+/* ---------- Collapsed state: the mini-player (all viewports) ---------- */
 
 #spm-root.spm-collapsed .spm-card {
   display: none;
 }
 
-#spm-root.spm-collapsed .spm-fab {
+/* Mini + full are two states of one component: the card glides out while
+ * the mini-player rises — shared artwork bridges the swap. */
+#spm-root .spm-card.spm-card-drag {
+  transition: none;
+}
+
+#spm-root .spm-card.spm-leaving-card {
+  transform: translateY(56px);
+  opacity: 0;
+}
+
+/* ---------- Collapsed mobile mini-player ---------- */
+
+#spm-root .spm-miniplayer {
+  position: relative;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  width: min(560px, calc(var(--spm-vw) - 24px));
+  margin-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: 8px 8px 8px 10px;
+  background: var(--spm-bg);
+  border: 1px solid var(--spm-card-border);
+  border-radius: 18px;
+  box-shadow: var(--spm-shadow);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+#spm-root.spm-collapsed .spm-miniplayer {
+  display: flex;
+  animation: spm-mini-in 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+@keyframes spm-mini-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+#spm-root .spm-miniplayer.spm-leaving {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+#spm-root .spm-miniplayer.spm-mdrag {
+  transition: none;
+}
+
+#spm-root .spm-mini-artwrap {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 26%;
+  overflow: hidden;
+  background: linear-gradient(145deg, #232326, #141415);
+}
+
+#spm-root .spm-mini-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+#spm-root .spm-mini-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(244, 241, 234, 0.25);
+}
+
+#spm-root .spm-mini-fallback svg {
+  width: 22px;
+  height: 22px;
+}
+
+#spm-root .spm-mini-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+#spm-root .spm-mini-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-mini-artist {
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--spm-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-mini-like {
   display: inline-flex;
-  animation: spm-in 0.3s ease;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  color: var(--spm-muted);
+  transition: color 0.18s;
+}
+
+#spm-root .spm-mini-like.spm-liked {
+  color: var(--spm-cream);
+}
+
+#spm-root .spm-mini-prev,
+#spm-root .spm-mini-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  color: var(--spm-muted);
+  transition: color 0.18s, transform 0.12s;
+}
+
+#spm-root .spm-mini-prev:hover,
+#spm-root .spm-mini-next:hover {
+  color: var(--spm-text);
+}
+
+#spm-root .spm-mini-prev:active,
+#spm-root .spm-mini-next:active {
+  transform: scale(0.9);
+}
+
+#spm-root .spm-mini-prev svg,
+#spm-root .spm-mini-next svg {
+  width: 20px;
+  height: 20px;
+}
+
+#spm-root .spm-mini-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--spm-solid);
+  color: var(--spm-on-solid);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s;
+}
+
+#spm-root .spm-mini-play:active {
+  transform: scale(0.92);
+}
+
+/* Progress hairline hugging the mini-player's top edge: the same playback
+ * ratio as the full card, with a glossy highlight + glow. Decorative twin
+ * (pointer-events pass straight through to the mini body). */
+#spm-root .spm-mini-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 18px 18px 0 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#spm-root .spm-mini-progress-fill {
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0) 60%),
+    var(--spm-solid);
+  box-shadow: 0 0 10px rgba(244, 241, 234, 0.5);
 }
 
 /* ---------- Narrow screens: bottom-sheet ----------
@@ -621,11 +827,10 @@
   width: min(100%, 300px);
 }
 
+/* Collapsed shows the full-width mini-player in every viewport, so the
+ * root keeps its anchoring (no corner-FAB placement anywhere). */
 #spm-root.spm-sheet.spm-collapsed {
-  right: 12px;
-  bottom: 12px;
-  left: auto;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 @media (max-width: 640px) {
@@ -652,13 +857,6 @@
   #spm-root .spm-stage {
     width: min(100%, 300px);
   }
-
-  #spm-root.spm-collapsed {
-    right: 12px;
-    bottom: 12px;
-    left: auto;
-    pointer-events: auto;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -667,7 +865,8 @@
   #spm-root .spm-blob,
   #spm-root .spm-circle,
   #spm-root .spm-play,
-  #spm-root .spm-mini {
+  #spm-root .spm-mini,
+  #spm-root .spm-miniplayer {
     animation: none;
     transition: none;
   }
@@ -705,6 +904,14 @@
     color: rgba(23, 23, 21, 0.25);
   }
 
+  #spm-root .spm-mini-artwrap {
+    background: linear-gradient(145deg, #e6e1d3, #d5cfbd);
+  }
+
+  #spm-root .spm-mini-fallback {
+    color: rgba(23, 23, 21, 0.25);
+  }
+
   #spm-root .spm-circle.spm-liked {
     background: rgba(20, 20, 18, 0.07);
   }
@@ -717,7 +924,28 @@
     box-shadow: 0 14px 34px rgba(30, 25, 15, 0.22), 0 12px 30px rgba(30, 25, 15, 0.4);
   }
 
-  #spm-root .spm-vol-slider {
+  #spm-root .spm-vol-track {
     background: rgba(23, 23, 21, 0.18);
+  }
+}
+
+/* Short viewports: keep everything reachable without scrolling (touch
+ * scrolling is intentionally off so collapse drags are never stolen). */
+@media (max-height: 640px) {
+  #spm-root .spm-card {
+    padding: 12px 18px 10px;
+  }
+
+  #spm-root .spm-stage {
+    width: min(100%, 210px);
+  }
+
+  #spm-root .spm-main {
+    margin-top: 4px;
+  }
+
+  #spm-root .spm-play {
+    width: 58px;
+    height: 58px;
   }
 }

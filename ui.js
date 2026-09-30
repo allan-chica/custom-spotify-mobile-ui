@@ -105,21 +105,43 @@
       '<button class="spm-ghost spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
       '<div class="spm-vol">' +
       '<button class="spm-voltbtn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
-      '<input class="spm-vol-slider" type="range" min="0" max="100" value="100" aria-label="Volume" />' +
+      '<div class="spm-vol-bar" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">' +
+      '<div class="spm-vol-track"><div class="spm-vol-fill"></div></div>' +
+      '<div class="spm-vol-knob"></div>' +
+      "</div>" +
       "</div>" +
       "</div>" +
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
-      '<button class="spm-fab" type="button" aria-label="Open mobile player">' +
-      '<img class="spm-fab-art" alt="" draggable="false" />' +
-      '<span class="spm-fab-play">' + SVG.play + "</span>" +
-      "</button>";
+      '<div class="spm-miniplayer" role="region" aria-label="Mini player">' +
+      '<div class="spm-mini-progress" aria-hidden="true"><div class="spm-mini-progress-fill"></div></div>' +
+      '<div class="spm-mini-artwrap"><img class="spm-mini-art" alt="" draggable="false" />' +
+      '<div class="spm-mini-fallback" aria-hidden="true">' + SVG.note + "</div></div>" +
+      '<div class="spm-mini-titles"><div class="spm-mini-title">Nothing playing</div>' +
+      '<div class="spm-mini-artist">Open Spotify</div></div>' +
+      '<button class="spm-mini-like" type="button" aria-label="Add to Liked Songs" aria-pressed="false">' +
+      SVG.heart +
+      "</button>" +
+      '<button class="spm-mini-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
+      '<button class="spm-mini-play" type="button" aria-label="Play">' + SVG.play + "</button>" +
+      '<button class="spm-mini-next" type="button" aria-label="Next">' + SVG.next + "</button>" +
+      "</div>";
 
     // All queries below are scoped to our own container — never Spotify's DOM.
     var q = function (sel) {
       return root.querySelector(sel);
     };
-    var fab = q(".spm-fab");
+    var cardEl = q(".spm-card");
+    var mini = q(".spm-miniplayer");
+    var miniArt = q(".spm-mini-art");
+    var miniFallback = q(".spm-mini-fallback");
+    var miniTitle = q(".spm-mini-title");
+    var miniArtist = q(".spm-mini-artist");
+    var miniLike = q(".spm-mini-like");
+    var miniPrev = q(".spm-mini-prev");
+    var miniPlay = q(".spm-mini-play");
+    var miniNext = q(".spm-mini-next");
+    var miniProgressFill = q(".spm-mini-progress-fill");
     var art = q(".spm-art");
     var artFallback = q(".spm-art-fallback");
     var titleEl = q(".spm-title");
@@ -139,13 +161,13 @@
     var durEl = q(".spm-dur");
     var statusEl = q(".spm-status");
     var muteBtn = q(".spm-mute");
-    var volSlider = q(".spm-vol-slider");
+    var volBar = q(".spm-vol-bar");
+    var volFill = q(".spm-vol-fill");
+    var volKnob = q(".spm-vol-knob");
     var collapseBtn = q(".spm-collapse");
     var lyricsBtn = q(".spm-lyrics-open");
     var queueBtn = q(".spm-queue");
     var devicesBtn = q(".spm-devices");
-    var fabArt = q(".spm-fab-art");
-    var fabPlay = q(".spm-fab-play");
 
     var collapsed = false;
     var seeking = false;
@@ -154,6 +176,10 @@
     var rafId = 0;
     var currentArtwork = "";
     var envInfo = null;
+    var transitionTimer = 0;
+    var cardDrag = null;
+    var miniDrag = null;
+    var miniSuppressClick = false;
 
     /* Responsive environment: on phones Spotify renders its desktop layout
      * in a wide layout viewport that is scaled down to fit the glass, which
@@ -204,9 +230,92 @@
       } catch (e) {}
     }
 
-    try {
-      if (localStorage.getItem("spm-collapsed") === "1") setCollapsed(true);
-    } catch (e) {}
+    function prefersReducedMotion() {
+      try {
+        return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function clearTransitionTimer() {
+      if (transitionTimer) {
+        try {
+          window.clearTimeout(transitionTimer);
+        } catch (e) {}
+        transitionTimer = 0;
+      }
+    }
+
+    // Animated state flips (mini <-> full feel like one component
+    // transforming, not two boxes swapping). Reduced-motion users and
+    // first paint get the instant swap instead.
+    function expandAnimated() {
+      if (!collapsed) return;
+      clearTransitionTimer();
+      if (prefersReducedMotion()) {
+        setCollapsed(false);
+        return;
+      }
+      // Mini sinks away, then the full card rises — shared artwork in both
+      // makes the handoff read as one continuous surface.
+      mini.classList.add("spm-leaving");
+      transitionTimer = window.setTimeout(function () {
+        transitionTimer = 0;
+        mini.classList.remove("spm-leaving");
+        setCollapsed(false);
+      }, 160);
+    }
+
+    function collapseAnimated() {
+      if (collapsed) return;
+      clearTransitionTimer();
+      if (prefersReducedMotion()) {
+        setCollapsed(true);
+        return;
+      }
+      cardEl.classList.add("spm-leaving-card");
+      transitionTimer = window.setTimeout(function () {
+        transitionTimer = 0;
+        cardEl.classList.remove("spm-leaving-card");
+        setCollapsed(true);
+      }, 210);
+    }
+
+    // Drag-release path: the card is already mid-flight under the finger,
+    // so glide it the rest of the way out, then swap to the mini-player.
+    function finishDragCollapse() {
+      clearTransitionTimer();
+      cardEl.classList.remove("spm-card-drag");
+      var h = cardHeight();
+      cardEl.style.transform = "translateY(" + Math.round(h * 1.1) + "px)";
+      cardEl.style.opacity = "0";
+      if (prefersReducedMotion()) {
+        cardEl.style.transform = "";
+        cardEl.style.opacity = "";
+        setCollapsed(true);
+        return;
+      }
+      transitionTimer = window.setTimeout(function () {
+        transitionTimer = 0;
+        cardEl.style.transform = "";
+        cardEl.style.opacity = "";
+        setCollapsed(true);
+      }, 210);
+    }
+
+    function applyStoredState() {
+      var stored = null;
+      try {
+        stored = localStorage.getItem("spm-collapsed");
+      } catch (e) {}
+      if (stored === "1") setCollapsed(true);
+      else if (stored === "0") setCollapsed(false);
+      // Mobile opens on the mini-player by default (first run only —
+      // afterwards the remembered choice wins).
+      else if (envInfo && envInfo.sheet) setCollapsed(true);
+      else setCollapsed(false);
+    }
 
     function pressFeedback(btn) {
       btn.classList.remove("spm-press");
@@ -256,21 +365,121 @@
       spotify.toggleMute();
     });
     collapseBtn.addEventListener("click", function () {
-      setCollapsed(true);
-    });
-    fab.addEventListener("click", function () {
-      setCollapsed(false);
+      collapseAnimated();
     });
 
-    // Volume slider -> adapter (no Spotify DOM access here).
+    // --- mini-player wiring (same component, compact state) ---
+    miniPlay.addEventListener("click", function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      pressFeedback(miniPlay);
+      spotify.togglePlay();
+    });
+    miniLike.addEventListener("click", function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      pressFeedback(miniLike);
+      spotify.toggleLike();
+    });
+    miniPrev.addEventListener("click", function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      pressFeedback(miniPrev);
+      spotify.previous();
+    });
+    miniNext.addEventListener("click", function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      pressFeedback(miniNext);
+      spotify.next();
+    });
+    mini.addEventListener("click", function (e) {
+      var t = e && e.target;
+      if (t && t.closest && t.closest("button")) return; // buttons act alone
+      if (miniSuppressClick) {
+        miniSuppressClick = false; // a swipe release may still fire click
+        return;
+      }
+      expandAnimated();
+    });
+
+    // Custom volume slider -> adapter (no Spotify DOM access here).
+    // Native <input type=range> can't be used: the card pins touch-action
+    // so collapse drags are never stolen, which would also pin the native
+    // slider. This pointer-driven bar behaves the same (drag + keys).
+    var volDragging = false;
     var volDebounce = 0;
-    volSlider.addEventListener("input", function () {
-      var v = Number(volSlider.value) / 100;
+
+    function volRatioFromEvent(e) {
+      var r = volBar.getBoundingClientRect();
+      var x = e.clientX !== undefined ? e.clientX : r.left;
+      return Math.max(0, Math.min(1, (x - r.left) / Math.max(1, r.width)));
+    }
+
+    function paintVol(vv) {
+      vv = Math.max(0, Math.min(100, Math.round(vv)));
+      if (volFill) volFill.style.transform = "scaleX(" + vv / 100 + ")";
+      if (volKnob) volKnob.style.left = vv + "%";
+      volBar.setAttribute("aria-valuemax", "100");
+      volBar.setAttribute("aria-valuenow", String(vv));
+      volBar.setAttribute("aria-valuetext", vv + " percent volume");
+      var wantIcon = vv <= 0 ? SVG.mute : SVG.volume;
+      if (muteBtn.innerHTML !== wantIcon) muteBtn.innerHTML = wantIcon;
+      muteBtn.setAttribute("aria-label", vv <= 0 ? "Unmute" : "Mute");
+    }
+
+    function pushVolume(v) {
+      v = Math.max(0, Math.min(1, Number(v) || 0));
       window.clearTimeout(volDebounce);
       volDebounce = window.setTimeout(function () {
         spotify.setVolume(v);
       }, 60);
-      muteBtn.innerHTML = v <= 0.01 ? SVG.mute : SVG.volume;
+    }
+
+    volBar.addEventListener("pointerdown", function (e) {
+      volDragging = true;
+      try {
+        volBar.setPointerCapture && volBar.setPointerCapture(e.pointerId);
+      } catch (err) {}
+      var v = volRatioFromEvent(e) * 100;
+      paintVol(v);
+      pushVolume(v / 100);
+      e.preventDefault();
+    });
+
+    volBar.addEventListener("pointermove", function (e) {
+      if (!volDragging) return;
+      var v = volRatioFromEvent(e) * 100;
+      paintVol(v);
+      pushVolume(v / 100);
+    });
+
+    volBar.addEventListener("pointerup", function () {
+      volDragging = false;
+    });
+
+    volBar.addEventListener("pointercancel", function () {
+      volDragging = false;
+    });
+
+    volBar.addEventListener("keydown", function (e) {
+      var cur = 0;
+      try {
+        cur = Number(volBar.getAttribute("aria-valuenow")) || 0;
+      } catch (err2) {}
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+        paintVol(cur + 5);
+        pushVolume((cur + 5) / 100);
+        e.preventDefault();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+        paintVol(cur - 5);
+        pushVolume((cur - 5) / 100);
+        e.preventDefault();
+      } else if (e.key === "Home") {
+        paintVol(0);
+        pushVolume(0);
+        e.preventDefault();
+      } else if (e.key === "End") {
+        paintVol(100);
+        pushVolume(1);
+        e.preventDefault();
+      }
     });
 
     // --- linear progress: slim line under the artwork, tap/drag to seek ---
@@ -308,6 +517,10 @@
       var ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
       if (fill) fill.style.transform = "scaleX(" + ratio + ")";
       if (knob) knob.style.left = ratio * 100 + "%";
+      // Mini top hairline mirrors the same ratio (decorative twin).
+      if (miniProgressFill) {
+        miniProgressFill.style.transform = "scaleX(" + ratio + ")";
+      }
       // ARIA churn feeds MutationObservers (and screen readers); 1Hz is
       // plenty, the visuals already move every frame.
       var sec = Math.round(current);
@@ -506,6 +719,205 @@
       blobRest(); // CSS transition glides it home
     }
 
+    // --- state gestures: card swipe-down collapses, mini swipe-up expands ---
+    // Pointer events throughout; the dragged surface tracks the finger live
+    // (no wait-for-release), with distance + velocity thresholds so flings
+    // commit and accidental nudges snap back.
+    function cardHeight() {
+      try {
+        return cardEl.getBoundingClientRect().height || 400;
+      } catch (e) {
+        return 400;
+      }
+    }
+
+    function glideCardHome() {
+      // Removing the drag class re-arms the CSS transition; clearing the
+      // pose on the next frame lets it glide home instead of jumping.
+      cardEl.classList.remove("spm-card-drag");
+      try {
+        requestAnimationFrame(function () {
+          cardEl.style.transform = "";
+          cardEl.style.opacity = "";
+        });
+      } catch (e) {
+        cardEl.style.transform = "";
+        cardEl.style.opacity = "";
+      }
+    }
+
+    function abortCardDrag() {
+      cardDrag = null;
+      glideCardHome();
+    }
+
+    cardEl.addEventListener("pointerdown", function (e) {
+      if (collapsed || cardDrag) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      var t = e.target;
+      // Controls, links and the seek bar keep their own gestures.
+      if (t && t.closest && t.closest("button, input, select, textarea, a, [role='slider'], .spm-bar")) {
+        return;
+      }
+      if (cardEl.scrollTop > 4) return; // scrolled: let it scroll
+      cardDrag = {
+        id: e.pointerId,
+        y0: e.clientY,
+        x0: e.clientX,
+        dy: 0,
+        t0: nowMs(),
+        locked: false,
+        inBlob: !!(t && t.closest && t.closest(".spm-blob")),
+      };
+      // Mouse has no implicit capture; touch is captured to its target and
+      // bubbles up through here either way.
+      if (e.pointerType === "mouse") {
+        try {
+          cardEl.setPointerCapture && cardEl.setPointerCapture(e.pointerId);
+        } catch (err) {}
+      }
+    });
+
+    cardEl.addEventListener("pointermove", function (e) {
+      if (!cardDrag || e.pointerId !== cardDrag.id) return;
+      if (cardEl.scrollTop > 4) {
+        abortCardDrag();
+        return;
+      }
+      var dx = e.clientX - cardDrag.x0;
+      var dy = e.clientY - cardDrag.y0;
+      if (!cardDrag.locked) {
+        if (Math.abs(dy) < 12 && Math.abs(dx) < 12) return;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          // Horizontal: the artwork swipe owns drags starting on art.
+          abortCardDrag();
+          return;
+        }
+        if (dy < 0) {
+          abortCardDrag(); // upward on the full card: not a dismiss
+          return;
+        }
+        cardDrag.locked = true;
+        cardEl.classList.add("spm-card-drag");
+      }
+      cardDrag.dy = dy;
+      var h = cardHeight();
+      var clamped = Math.max(0, Math.min(h * 1.2, dy));
+      cardEl.style.transform = "translateY(" + Math.round(clamped) + "px)";
+      cardEl.style.opacity = String(Math.max(0.35, 1 - clamped / (h * 1.4 || 1)));
+    });
+
+    function cardEnd(e) {
+      if (!cardDrag || (e && e.pointerId !== cardDrag.id)) return;
+      var c = cardDrag;
+      cardDrag = null;
+      if (!c.locked) return; // tap / horizontal / upward: leave it all alone
+      var dt = Math.max(1, nowMs() - c.t0);
+      var vel = c.dy / dt; // px per ms, downward positive
+      var h = cardHeight();
+      // Willing commit: modest drags count, flings count more. (A tall
+      // threshold felt "stuck": normal drags kept snapping back.)
+      if (c.dy > Math.max(64, h * 0.15) || (c.dy > 40 && vel > 0.5)) {
+        finishDragCollapse();
+      } else {
+        glideCardHome();
+      }
+    }
+
+    cardEl.addEventListener("pointerup", cardEnd);
+    cardEl.addEventListener("pointercancel", abortCardDrag);
+
+    mini.addEventListener("pointerdown", function (e) {
+      if (!collapsed || miniDrag) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      var t = e.target;
+      if (t && t.closest && t.closest("button")) return; // let buttons work
+      miniDrag = {
+        id: e.pointerId,
+        y0: e.clientY,
+        x0: e.clientX,
+        dx: 0,
+        dy: 0,
+        t0: nowMs(),
+        locked: null,
+      };
+      try {
+        mini.setPointerCapture && mini.setPointerCapture(e.pointerId);
+      } catch (err) {}
+    });
+
+    mini.addEventListener("pointermove", function (e) {
+      if (!miniDrag || e.pointerId !== miniDrag.id) return;
+      var dx = e.clientX - miniDrag.x0;
+      var dy = e.clientY - miniDrag.y0;
+      if (!miniDrag.locked) {
+        if (Math.abs(dy) < 10 && Math.abs(dx) < 10) return;
+        // First dominant axis wins: up expands, sideways changes tracks.
+        miniDrag.locked = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+        mini.classList.add("spm-mdrag");
+      }
+      if (miniDrag.locked === "v") {
+        miniDrag.dy = dy;
+        // Upward only, resisted — a tactile hint that it lifts away.
+        var pull = Math.max(-88, Math.min(0, dy * 0.35));
+        mini.style.transform = "translateY(" + Math.round(pull) + "px)";
+      } else {
+        miniDrag.dx = dx;
+        var w = 200;
+        try {
+          w = mini.getBoundingClientRect().width || 200;
+        } catch (err2) {}
+        var slide = Math.max(-72, Math.min(72, dx));
+        mini.style.transform = "translateX(" + Math.round(slide) + "px)";
+        mini.style.opacity = String(Math.max(0.45, 1 - Math.abs(slide) / (w * 0.9)));
+      }
+    });
+
+    function miniEnd(e) {
+      if (!miniDrag || (e && e.pointerId !== miniDrag.id)) return;
+      var m = miniDrag;
+      miniDrag = null;
+      mini.classList.remove("spm-mdrag");
+      mini.style.transform = "";
+      mini.style.opacity = "";
+      if (!m.locked) return; // plain tap: the click handler expands
+      var dt = Math.max(1, nowMs() - m.t0);
+      if (m.locked === "v") {
+        var vel = -m.dy / dt; // upward velocity, px per ms
+        if (m.dy < -90 || (m.dy < -45 && vel > 0.45)) {
+          miniSuppressClick = true; // a swipe release may still fire click
+          expandAnimated();
+        }
+        // Otherwise the cleared transform glides home via CSS transition.
+      } else {
+        // Horizontal fling on the mini: previous / next track, with a
+        // small nudge toward the swipe before gliding home on new data.
+        var hvel = Math.abs(m.dx) / dt;
+        if (Math.abs(m.dx) > 56 || (Math.abs(m.dx) > 32 && hvel > 0.5)) {
+          miniSuppressClick = true;
+          var dir = m.dx < 0 ? -1 : 1;
+          mini.style.transform = "translateX(" + dir * 44 + "px)";
+          mini.style.opacity = "0.4";
+          if (dir < 0) spotify.next();
+          else spotify.previous();
+          clearTransitionTimer();
+          transitionTimer = window.setTimeout(function () {
+            transitionTimer = 0;
+            mini.style.transform = "";
+            mini.style.opacity = "";
+          }, 180);
+        }
+      }
+    }
+
+    mini.addEventListener("pointerup", miniEnd);
+    mini.addEventListener("pointercancel", function () {
+      miniDrag = null;
+      mini.classList.remove("spm-mdrag");
+      mini.style.transform = "";
+      mini.style.opacity = "";
+    });
+
     // --- snapshot rendering (no full DOM rebuilds) ---
     function render(snap) {
       var prevSnap = lastSnap;
@@ -521,6 +933,14 @@
       }
       var artistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify and press play");
       if (artistEl.textContent !== artistText) artistEl.textContent = artistText;
+
+      // Mini mirrors (same component, compact state).
+      if (miniTitle.textContent !== titleEl.textContent) {
+        miniTitle.textContent = titleEl.textContent;
+      }
+      if (miniTitle.title !== titleEl.title) miniTitle.title = titleEl.title;
+      var miniArtistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify");
+      if (miniArtist.textContent !== miniArtistText) miniArtist.textContent = miniArtistText;
 
       if (snap.artwork && snap.artwork !== currentArtwork) {
         // A swipe is waiting for the new cover: fly it in from the side it
@@ -546,14 +966,14 @@
         currentArtwork = snap.artwork;
         art.src = snap.artwork;
         art.classList.remove("spm-loaded");
-        fabArt.src = snap.artwork;
-        fabArt.style.display = "block";
+        miniArt.src = snap.artwork;
+        miniArt.style.display = "block";
         if (swipeDir) flyIn(swipeDir);
       } else if (!snap.artwork && currentArtwork) {
         currentArtwork = "";
         art.removeAttribute("src");
-        fabArt.removeAttribute("src");
-        fabArt.style.display = "none";
+        miniArt.removeAttribute("src");
+        miniArt.style.display = "none";
       } else if (awaitingArt && snap.track && prevSnap && prevSnap.track && snap.track !== prevSnap.track) {
         // Same cover, new track (identical artwork URL): nothing to swap,
         // so just glide the art home instead of waiting out the timer.
@@ -587,6 +1007,8 @@
       var artVisible = !!snap.artwork;
       art.style.display = artVisible ? "block" : "none";
       artFallback.style.display = artVisible ? "none" : "flex";
+      miniArt.style.display = artVisible ? "block" : "none";
+      miniFallback.style.display = artVisible ? "none" : "flex";
 
       // Play / pause icon (only touch DOM when it flips).
       var wantPlaying = !!snap.isPlaying;
@@ -595,8 +1017,10 @@
         playBtn.innerHTML = wantPlaying ? SVG.pause : SVG.play;
         playBtn.setAttribute("data-state", wantPlaying ? "pause" : "play");
         playBtn.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
-        fabPlay.innerHTML = wantPlaying ? SVG.pause : SVG.play;
+        miniPlay.innerHTML = wantPlaying ? SVG.pause : SVG.play;
       }
+      miniPlay.setAttribute("data-state", wantPlaying ? "pause" : "play");
+      miniPlay.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
       root.classList.toggle("spm-playing", wantPlaying);
 
       // Modes.
@@ -630,15 +1054,22 @@
         likeBtn.innerHTML = wantLiked ? SVG.heartFill : SVG.heart;
         likeBtn.setAttribute("data-liked", wantLiked ? "1" : "0");
       }
+      // Mini like mirrors with its own churn guard.
+      var miniShownLiked = miniLike.getAttribute("data-liked") === "1";
+      miniLike.classList.toggle("spm-liked", wantLiked);
+      miniLike.setAttribute("aria-pressed", wantLiked ? "true" : "false");
+      miniLike.setAttribute(
+        "aria-label",
+        wantLiked ? "Remove from Liked Songs" : "Add to Liked Songs"
+      );
+      if (wantLiked !== miniShownLiked) {
+        miniLike.innerHTML = wantLiked ? SVG.heartFill : SVG.heart;
+        miniLike.setAttribute("data-liked", wantLiked ? "1" : "0");
+      }
 
-      // Duration + volume (skip while dragging either control).
-      if (document.activeElement !== volSlider) {
-        var vv = Math.round((snap.volume !== undefined ? snap.volume : 1) * 100);
-        if (String(volSlider.value) !== String(vv)) volSlider.value = String(vv);
-        var muted = snap.muted || vv <= 0;
-        var wantIcon = muted ? SVG.mute : SVG.volume;
-        if (muteBtn.innerHTML !== wantIcon) muteBtn.innerHTML = wantIcon;
-        muteBtn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+      // Duration + volume (skip while dragging the volume bar).
+      if (!volDragging) {
+        paintVol(Math.round((snap.volume !== undefined ? snap.volume : 1) * 100));
       }
 
       var durText = formatTime(snap.duration || 0);
@@ -755,6 +1186,7 @@
     function mount(parent) {
       (parent || document.body).appendChild(root);
       applyEnvironment();
+      applyStoredState();
       watchEnvironment();
       try {
         console.info(

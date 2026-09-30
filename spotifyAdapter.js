@@ -354,40 +354,64 @@
   }
 
   function findLikeButton() {
-    var widget = findWidget();
-    var scope = widget || findPlayer();
-    function scoped(sel) {
-      if (scope && scope.querySelector) {
-        try {
-          var found = scope.querySelector(sel);
-          if (found) return found;
-        } catch (e) {}
-      }
-      return null;
+    // Search the widget first, then the whole player bar: the toggle lives
+    // in the widget in current builds, but a sibling placement must not
+    // silently kill Likes. Scoped tightly on purpose — a document-wide
+    // first match could be some unrelated button.
+    var scopes = [];
+    var likeWidget = findWidget();
+    if (likeWidget) scopes.push(likeWidget);
+    var likePlayer = findPlayer();
+    if (likePlayer && likePlayer !== likeWidget) scopes.push(likePlayer);
+    function labelOf(btn) {
+      var label = "";
+      var title = "";
+      try {
+        label = btn.getAttribute("aria-label") || "";
+        title = btn.getAttribute("title") || "";
+      } catch (e) {}
+      return norm(label + " " + title);
     }
     // Dedicated testid first (Spotify's like toggle in the widget).
-    var byTid = scoped('button[data-testid="add-button"]');
-    if (byTid) return byTid;
-    // Otherwise any button in the widget/player scope mentioning like.
+    for (var s = 0; s < scopes.length; s++) {
+      var scopeRoot = scopes[s];
+      if (scopeRoot.querySelector) {
+        var byTid = null;
+        try {
+          byTid = scopeRoot.querySelector('button[data-testid="add-button"]');
+        } catch (e) {
+          byTid = null;
+        }
+        if (byTid) return byTid;
+      }
+    }
+    // Otherwise any button in those scopes mentioning like.
     // Strong phrases first, then a bare "like" (never "dislike": podcast
-    // thumbs-down contains "like" but means the opposite). Scoped tightly
-    // on purpose — a document-wide first match could be some other button.
-    var btns = [];
-    if (scope && scope.querySelectorAll) {
+    // thumbs-down contains "like" but means the opposite).
+    var strong = LABELS.likeAdd.concat(LABELS.likeRemove);
+    for (var a = 0; a < scopes.length; a++) {
+      var btns = [];
       try {
-        btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+        btns = Array.prototype.slice.call(scopes[a].querySelectorAll("button"));
       } catch (e) {
         btns = [];
       }
+      for (var i = 0; i < btns.length; i++) {
+        if (includesAny(labelOf(btns[i]), strong)) return btns[i];
+      }
     }
-    var strong = LABELS.likeAdd.concat(LABELS.likeRemove);
-    for (var i = 0; i < btns.length; i++) {
-      if (includesAny(btns[i].getAttribute("aria-label"), strong)) return btns[i];
-    }
-    for (var j = 0; j < btns.length; j++) {
-      var lj = norm(btns[j].getAttribute("aria-label"));
-      if (lj && lj.indexOf("like") !== -1 && lj.indexOf("dislike") === -1) {
-        return btns[j];
+    for (var b = 0; b < scopes.length; b++) {
+      var btns2 = [];
+      try {
+        btns2 = Array.prototype.slice.call(scopes[b].querySelectorAll("button"));
+      } catch (e2) {
+        btns2 = [];
+      }
+      for (var j = 0; j < btns2.length; j++) {
+        var lj = labelOf(btns2[j]);
+        if (lj && lj.indexOf("like") !== -1 && lj.indexOf("dislike") === -1) {
+          return btns2[j];
+        }
       }
     }
     return null;
@@ -1130,6 +1154,76 @@
     return false;
   }
 
+  /**
+   * Diagnostic for like-state mismatches: reports the exact button the
+   * adapter selected (or null), what it claims, and every like-mentioning
+   * button in scope. Paste the output when the heart disagrees with Spotify.
+   */
+  function getLikeInfo() {
+    function describe(btn) {
+      var out = {
+        tag: null,
+        testid: null,
+        label: null,
+        title: null,
+        checked: null,
+        pressed: null,
+        active: null,
+        ancestors: "",
+        html: "",
+      };
+      if (!btn) return null;
+      try {
+        out.tag = btn.tagName || null;
+        out.testid = btn.getAttribute ? btn.getAttribute("data-testid") : null;
+        out.label = btn.getAttribute ? btn.getAttribute("aria-label") : null;
+        out.title = btn.getAttribute ? btn.getAttribute("title") : null;
+        out.checked = btn.getAttribute ? btn.getAttribute("aria-checked") : null;
+        out.pressed = btn.getAttribute ? btn.getAttribute("aria-pressed") : null;
+        out.active = btn.getAttribute ? btn.getAttribute("data-active") : null;
+        out.ancestors = ancestorSummary(btn, 4);
+        out.html = String(btn.outerHTML || "").slice(0, 300);
+      } catch (e) {}
+      return out;
+    }
+    var selected = null;
+    try {
+      selected = findLikeButton();
+    } catch (e) {
+      selected = null;
+    }
+    var cands = [];
+    try {
+      var scopes = [];
+      var w = findWidget();
+      if (w) scopes.push(w);
+      var p = findPlayer();
+      if (p && p !== w) scopes.push(p);
+      for (var s = 0; s < scopes.length && cands.length < 6; s++) {
+        var btns = scopes[s].querySelectorAll ? scopes[s].querySelectorAll("button") : [];
+        for (var i = 0; i < btns.length && cands.length < 6; i++) {
+          var l =
+            norm(btns[i].getAttribute("aria-label")) +
+            " " +
+            norm(btns[i].getAttribute("title"));
+          if (
+            l.indexOf("like") !== -1 ||
+            l.indexOf("gusta") !== -1 ||
+            l.indexOf("save") !== -1 ||
+            l.indexOf("enregistrer") !== -1
+          ) {
+            cands.push(describe(btns[i]));
+          }
+        }
+      }
+    } catch (e) {}
+    var liked = null;
+    try {
+      liked = isLiked();
+    } catch (e) {}
+    return { selected: describe(selected), liked: liked, candidates: cands };
+  }
+
   function getVolume() {
     var slider = findVolumeSlider();
     var nums = sliderNumbers(slider);
@@ -1648,6 +1742,7 @@
     getSnapshot: getSnapshot,
     getArtworkCandidates: getArtworkCandidates,
     getViewportInfo: getViewportInfo,
+    getLikeInfo: getLikeInfo,
 
     // Internal discovery helpers (kept public for diagnostics/tests only).
     _findPlayerButton: findPlayerButton,

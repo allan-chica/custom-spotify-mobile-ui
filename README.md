@@ -107,8 +107,33 @@ squircle artwork, a slim seekable progress line with flanking times beneath
 it, centered uppercase titles, controls in concept order (repeat, previous,
 play, next, shuffle) with a cream play button, a Lyrics row that opens
 Spotify's lyrics (no divider), and a slim Queue/Devices/volume aux row.
-No lyric text is faked — only real Spotify state is shown. All Spotify
-access still goes through the adapter.
+No lyric text is faked — only real Spotify
+state is shown. All Spotify access still goes through the adapter.
+
+Mini-player + gestures:
+
+- Mini and full are two states of one component fed by the same snapshot
+  (art, title, artist, play, like stay in sync in both). The mini is the
+  collapsed state on every viewport, including desktop.
+- Mobile opens on the mini-player by default (first run; afterwards the
+  remembered choice wins).
+- Mini-player: floating bar (art, title, artist, like, prev, play, next),
+  same palette/borders/blur, light/dark aware, with a glossy progress
+  hairline hugging its top edge. Tap, swipe up, or swipe sideways to
+  expand / change tracks.
+- Full card collapses via downward swipe anywhere except controls, links,
+  and the bars; the card follows the finger 1:1 and snaps back under
+  ~max(64px, 15% height) (or 40px + fling). The card pins touch-action so
+  the page can never steal a collapse mid-drag (which froze it); the
+  volume slider is a custom pointer bar for the same reason. Horizontal
+  drags starting on the artwork stay owned by the track-swipe gesture.
+- Like discovery: `add-button` testid, then like-mentioning buttons in the
+  widget + player bar (never document-wide, never Dislike); state from
+  checked/pressed/active then labels. If the heart still disagrees, run
+  `SpotMobile.spotify.getLikeInfo()` in devtools and send the output.
+- Transitions are staged (mini sinks as the card rises and vice versa) with
+  shared artwork bridging the swap — never an abrupt display flip.
+  `prefers-reduced-motion` gets instant swaps.
 
 Notes on the concept adaptation:
 
@@ -201,8 +226,8 @@ only does real work while the player is missing. No aggressive polling.
 1. Open `chrome://extensions`, enable Developer mode → Load unpacked → select
    this folder.
 2. Open `https://open.spotify.com`, log in, play something.
-3. The mobile card appears bottom-right (bottom sheet on narrow screens).
-   Collapse it to a mini FAB with the chevron; Spotify underneath is untouched.
+3. The mini-player bar appears (bottom sheet on narrow screens).
+   Collapse it from the full card's chevron; Spotify underneath is untouched.
 
 To package for Quetta Android: zip the folder contents (`manifest.json` at the
 zip root) and import the `.zip`.
