@@ -361,6 +361,99 @@
   text-decoration: none;
 }
 
+/* ---------- Skeleton loading (before first track) ----------
+ * Replaces the "Nothing playing" dummy text with shimmering
+ * placeholders. Active only while #spm-root carries .spm-loading
+ * (toggled from ui.js: true until the first real track arrives).
+ * Text is made transparent and replaced by animated bars; artwork
+ * shows a shimmer instead of the note fallback. Purely visual:
+ * screen readers get aria-busy on the root. */
+@keyframes spm-skeleton {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+#spm-root.spm-loading .spm-title,
+#spm-root.spm-loading .spm-artist-link,
+#spm-root.spm-loading .spm-mini-title,
+#spm-root.spm-loading .spm-mini-artist {
+  color: transparent !important;
+  -webkit-user-select: none;
+  user-select: none;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    rgba(244, 241, 234, 0.07) 40%,
+    rgba(244, 241, 234, 0.18) 50%,
+    rgba(244, 241, 234, 0.07) 60%
+  );
+  background-size: 200% 100%;
+  animation: spm-skeleton 1.4s ease-in-out infinite;
+}
+
+#spm-root.spm-loading .spm-title {
+  height: 18px;
+  width: 62%;
+  margin-left: auto;
+  margin-right: auto;
+  border-radius: 8px;
+}
+
+#spm-root.spm-loading .spm-artist {
+  overflow: visible;
+}
+
+#spm-root.spm-loading .spm-artist-link {
+  display: block;
+  height: 13px;
+  width: 42%;
+  margin-left: auto;
+  margin-right: auto;
+  border-radius: 7px;
+}
+
+#spm-root.spm-loading .spm-mini-title {
+  height: 13px;
+  width: 70%;
+  border-radius: 6px;
+}
+
+#spm-root.spm-loading .spm-mini-artist {
+  height: 11px;
+  width: 45%;
+  margin-top: 6px;
+  border-radius: 6px;
+}
+
+/* Artwork shimmer while loading: hide the note fallback, shimmer the
+ * blob + mini artwrap instead. !important wins over the inline
+ * display set from render(). */
+#spm-root.spm-loading .spm-art-fallback,
+#spm-root.spm-loading .spm-mini-fallback {
+  display: none !important;
+}
+
+#spm-root.spm-loading .spm-blob,
+#spm-root.spm-loading .spm-mini-artwrap {
+  background: linear-gradient(
+    100deg,
+    #1b1b1e 40%,
+    #2a2a2f 50%,
+    #1b1b1e 60%
+  );
+  background-size: 200% 100%;
+  animation: spm-skeleton 1.4s ease-in-out infinite;
+}
+
+#spm-root.spm-loading .spm-bar,
+#spm-root.spm-loading .spm-progress {
+  opacity: 0.55;
+}
+
 /* ---------- Main controls (concept order) ---------- */
 
 #spm-root .spm-main {
@@ -827,6 +920,82 @@
   border-radius: 26%;
   overflow: hidden;
   background: linear-gradient(145deg, #232326, #141415);
+  /* Stay above the mini glow (see .spm-mini-halos below). */
+  z-index: 1;
+}
+
+/* ---------- Mini-player glow (behind the mini cover) ----------
+ * Same compositor-only technique as the full-card halos: off-center
+ * gradients on asymmetric clips, transform/translate animation only
+ * (never border-radius / filter / blur, which repaint per frame).
+ * The layer is TINY (~64px) so its texture cost is negligible, and it
+ * is fully frozen (animation-play-state: paused, opacity 0) unless the
+ * mini is visible AND playing AND artwork is present — same contract
+ * as the main halo. That is why adding it costs ~nothing measurable:
+ * paused CSS animations on a 64px layer don't composite per frame. */
+#spm-root .spm-mini-halos {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 60px;
+  height: 60px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  background: radial-gradient(circle, var(--spm-glow-strong) 0%, transparent 65%);
+  animation: spm-mini-halo-core 2.6s ease-in-out infinite;
+}
+
+#spm-root .spm-mini-halos::before,
+#spm-root .spm-mini-halos::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+#spm-root .spm-mini-halos::before {
+  opacity: 0.9;
+  border-radius: 58% 42% 55% 45% / 52% 56% 44% 48%;
+  background: radial-gradient(58% 42% at 38% 34%, rgba(var(--spm-halo-cover-rgb), 0.5) 0%, transparent 70%);
+  animation: spm-wisp-a 7s linear infinite, spm-wisp-drift-a 11s ease-in-out infinite alternate;
+}
+
+#spm-root .spm-mini-halos::after {
+  opacity: 0.85;
+  border-radius: 46% 54% 60% 40% / 56% 44% 58% 42%;
+  background: radial-gradient(62% 48% at 62% 66%, rgba(var(--spm-halo-accent-rgb), 0.38) 0%, transparent 70%);
+  animation: spm-wisp-b 10s linear infinite, spm-wisp-drift-b 13s ease-in-out infinite alternate;
+}
+
+/* Visible only when the mini itself is visible (collapsed) + playing +
+ * artwork present. No sheet gate: the mini is 44px everywhere, so the
+ * cost is identical on desktop and mobile. */
+#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos {
+  opacity: 1;
+}
+
+#spm-root .spm-mini-halos,
+#spm-root .spm-mini-halos::before,
+#spm-root .spm-mini-halos::after {
+  animation-play-state: paused;
+}
+
+#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos,
+#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos::before,
+#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos::after {
+  animation-play-state: running;
+}
+
+@keyframes spm-mini-halo-core {
+  0%,
+  100% {
+    transform: translateY(-50%) scale(1);
+  }
+  50% {
+    transform: translateY(-50%) scale(1.12);
+  }
 }
 
 #spm-root .spm-mini-art {
@@ -853,6 +1022,8 @@
 #spm-root .spm-mini-titles {
   flex: 1;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
 #spm-root .spm-mini-title {
@@ -1100,10 +1271,19 @@
   #spm-root .spm-halos,
   #spm-root .spm-halos::before,
   #spm-root .spm-halos::after,
+  #spm-root .spm-mini-halos,
+  #spm-root .spm-mini-halos::before,
+  #spm-root .spm-mini-halos::after,
   #spm-root .spm-mini,
   #spm-root .spm-miniplayer,
   #spm-root .spm-fill,
-  #spm-root .spm-mini-progress-fill {
+  #spm-root .spm-mini-progress-fill,
+  #spm-root.spm-loading .spm-title,
+  #spm-root.spm-loading .spm-artist-link,
+  #spm-root.spm-loading .spm-mini-title,
+  #spm-root.spm-loading .spm-mini-artist,
+  #spm-root.spm-loading .spm-blob,
+  #spm-root.spm-loading .spm-mini-artwrap {
     animation: none;
     transition: none;
   }
@@ -1150,6 +1330,25 @@
 
   #spm-root .spm-mini-fallback {
     color: rgba(23, 23, 21, 0.25);
+  }
+
+  #spm-root.spm-loading .spm-title,
+  #spm-root.spm-loading .spm-artist-link,
+  #spm-root.spm-loading .spm-mini-title,
+  #spm-root.spm-loading .spm-mini-artist {
+    background: linear-gradient(
+      100deg,
+      rgba(23, 23, 21, 0.06) 40%,
+      rgba(23, 23, 21, 0.14) 50%,
+      rgba(23, 23, 21, 0.06) 60%
+    );
+    background-size: 200% 100%;
+  }
+
+  #spm-root.spm-loading .spm-blob,
+  #spm-root.spm-loading .spm-mini-artwrap {
+    background: linear-gradient(100deg, #e0dac9 40%, #f0ebdd 50%, #e0dac9 60%);
+    background-size: 200% 100%;
   }
 
   #spm-root .spm-circle.spm-liked {

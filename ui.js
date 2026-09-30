@@ -116,6 +116,7 @@
       "</div>" +
       '<div class="spm-miniplayer" role="region" aria-label="Mini player">' +
       '<div class="spm-mini-progress" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="spm-mini-progress-fill"></div></div>' +
+      '<div class="spm-mini-halos" aria-hidden="true"></div>' +
       '<div class="spm-mini-artwrap"><img class="spm-mini-art" alt="" draggable="false" />' +
       '<div class="spm-mini-fallback" aria-hidden="true">' + SVG.note + "</div></div>" +
       '<div class="spm-mini-titles"><div class="spm-mini-title">Nothing playing</div>' +
@@ -183,6 +184,14 @@
     var transitionTimer = 0;
     var miniDrag = null;
     var miniSuppressClick = false;
+    // Skeleton loading: true until the first real track arrives. While set,
+    // render() shows shimmer placeholders instead of the "Nothing playing"
+    // dummy text (see .spm-loading in style.css).
+    var hasEverLoaded = false;
+    root.classList.add("spm-loading");
+    try {
+      root.setAttribute("aria-busy", "true");
+    } catch (e) {}
 
     /* Responsive environment: on phones Spotify renders its desktop layout
      * in a wide layout viewport that is scaled down to fit the glass, which
@@ -764,28 +773,39 @@
 
     function commitSwipe(dir) {
       // dir -1 (swiped left) = next track, +1 (swiped right) = previous.
+      // NOTE on Spotify's previous semantics: pressing previous while >~3s
+      // into the song RESTARTS it instead of going back. That is not a bug
+      // in this UI — but the old code made it feel like one: it parked the
+      // art off-screen for up to 3s and swallowed the follow-up swipe, so
+      // users had to swipe twice with a long dead gap. The fixes below
+      // (fast restart snap-back + non-blocking gestures + 120ms arrival
+      // poll) make restart feel instant and the second swipe land.
       var w = blobWidth();
       blobPose(dir * w * 1.25, 0);
-      if (dir < 0) spotify.next();
-      else spotify.previous();
-      watchTrackArrival(); // poll for the new track; observer can lag
       if (awaitingArt && awaitingArt.timer) {
         try {
           window.clearTimeout(awaitingArt.timer);
         } catch (e) {}
       }
+      if (dir < 0) spotify.next();
+      else spotify.previous();
       var timer = 0;
+      var startPos = lastSnap && lastSnap.currentTime ? lastSnap.currentTime : 0;
+      var startTrack = lastSnap && lastSnap.track ? lastSnap.track : "";
+      var t0 = nowMs();
+      awaitingArt = { dir: dir, timer: 0, t0: t0, pos: startPos, track: startTrack };
+      watchTrackArrival(); // poll for the new track; observer can lag
       try {
         timer = window.setTimeout(function () {
-          // Spotify never delivered a new track: glide the old art home.
-          awaitingArt = null;
-          blobRest();
-        }, 3000);
+          // Spotify never delivered a new track (e.g. next at queue end):
+          // glide the old art home instead of sitting empty.
+          if (awaitingArt && awaitingArt.t0 === t0) {
+            awaitingArt = null;
+            blobRest();
+          }
+        }, 2000);
       } catch (e) {}
-      awaitingArt = { dir: dir, timer: timer };
-      awaitingArt.t0 = nowMs();
-      awaitingArt.pos = lastSnap && lastSnap.currentTime ? lastSnap.currentTime : 0;
-      awaitingArt.track = lastSnap && lastSnap.track ? lastSnap.track : "";
+      awaitingArt.timer = timer;
     }
 
     function flyIn(dir) {
@@ -800,11 +820,17 @@
     // Fast track-arrival watch: after prev/next the observer path (React
     // -> DOM mutation -> 150ms debounce -> snapshot) can lag, especially
     // on throttled mobile webviews — leaving the stage empty while Spotify
-    // has already moved on. Poll the cheap track title directly (250ms,
-    // max 3s to match the glide-home fallback) and render the moment it
-    // flips, which also triggers the fly-in via awaitingArt.
+    // has already moved on. Poll the cheap track title + clock directly
+    // (120ms, max ~2s to match the glide-home fallback) and render the
+    // moment it flips, which also triggers the fly-in via awaitingArt.
+    // The clock check is the previous-restart fast path: a sharp position
+    // drop means Spotify restarted the song (not a new track), so snap
+    // home at once instead of idling empty.
     function watchTrackArrival() {
       var tries = 0;
+      var startTrack = awaitingArt && awaitingArt.track ? awaitingArt.track : "";
+      var startPos = awaitingArt && isFinite(awaitingArt.pos) ? awaitingArt.pos : 0;
+      var dir = awaitingArt ? awaitingArt.dir : 0;
       try {
         var timer = window.setInterval(function () {
           if (!awaitingArt) {
@@ -823,8 +849,34 @@
             } catch (e2) {}
             return;
           }
-          if (tries >= 12) window.clearInterval(timer);
-        }, 250);
+          // Restart fast-path (previous with >~3s elapsed): position falls
+          // off a cliff while the title stays identical.
+          if (dir > 0 && startPos > 5) {
+            var posNow = NaN;
+            try {
+              posNow = spotify.getCurrentTime();
+            } catch (e3) {}
+            if (isFinite(posNow) && posNow + 3 < startPos) {
+              window.clearInterval(timer);
+              try {
+                render(spotify.getSnapshot());
+              } catch (e4) {}
+              // If the snapshot hasn't caught the restart yet, snap home
+              // directly so the stage is never stuck empty.
+              if (awaitingArt) {
+                if (awaitingArt.timer) {
+                  try {
+                    window.clearTimeout(awaitingArt.timer);
+                  } catch (e5) {}
+                }
+                awaitingArt = null;
+                blobRest();
+              }
+              return;
+            }
+          }
+          if (tries >= 16) window.clearInterval(timer);
+        }, 120);
       } catch (e) {}
     }
 
@@ -1174,9 +1226,21 @@
         if (Math.abs(dx) > Math.abs(dy)) {
           // Horizontal: only artwork drags become track swipes — anywhere
           // else the gesture belongs to nobody (a tap still works).
-          if (!gesture.fromBlob || awaitingArt) {
+          if (!gesture.fromBlob) {
             gesture = null;
             return;
+          }
+          // A previous swipe may still be waiting for its track (art flown
+          // out, timer pending). Swallowing the new drag here is exactly
+          // the old "swipe again, nothing happens" bug — cancel the stale
+          // wait and let this drag take over; commitSwipe replaces it.
+          if (awaitingArt) {
+            if (awaitingArt.timer) {
+              try {
+                window.clearTimeout(awaitingArt.timer);
+              } catch (err2) {}
+            }
+            awaitingArt = null;
           }
           gesture.mode = "art";
           blob.classList.add("spm-dragging"); // follow finger 1:1, no lag
@@ -1354,23 +1418,51 @@
       var prevSnap = lastSnap;
       lastSnap = snap;
       var hasTrack = !!(snap.track || snap.artist);
+      if (hasTrack) hasEverLoaded = true;
+      // Skeleton until the first real track: shimmer placeholders instead
+      // of "Nothing playing" dummy text. After a track has loaded once,
+      // fall back to the real empty-state messages.
+      var isLoading = !hasTrack && !hasEverLoaded;
+      root.classList.toggle("spm-loading", isLoading);
+      try {
+        if (isLoading) root.setAttribute("aria-busy", "true");
+        else root.removeAttribute("aria-busy");
+      } catch (e) {}
 
-      if (snap.track && titleEl.textContent !== snap.track) {
-        titleEl.textContent = snap.track;
-        titleEl.title = snap.track;
-      } else if (!snap.track && titleEl.textContent !== "Nothing playing") {
-        titleEl.textContent = "Nothing playing";
-        titleEl.title = "";
+      if (isLoading) {
+        if (titleEl.textContent !== "") {
+          titleEl.textContent = "";
+          titleEl.title = "";
+        }
+        if (artistBtn.textContent !== "") {
+          artistBtn.textContent = "";
+          artistBtn.title = "";
+        }
+        artistBtn.disabled = true;
+        artistBtn.setAttribute("aria-label", "Loading");
+        if (miniTitle.textContent !== "") {
+          miniTitle.textContent = "";
+          miniTitle.title = "";
+        }
+        if (miniArtist.textContent !== "") miniArtist.textContent = "";
+      } else {
+        if (snap.track && titleEl.textContent !== snap.track) {
+          titleEl.textContent = snap.track;
+          titleEl.title = snap.track;
+        } else if (!snap.track && titleEl.textContent !== "Nothing playing") {
+          titleEl.textContent = "Nothing playing";
+          titleEl.title = "";
+        }
+        var artistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify and press play");
+        if (artistBtn.textContent !== artistText) artistBtn.textContent = artistText;
+        if (artistBtn.title !== artistText) artistBtn.title = artistText;
+        // Only a real artist name navigates; placeholders stay inert.
+        artistBtn.disabled = !snap.artist;
+        artistBtn.setAttribute(
+          "aria-label",
+          snap.artist ? "Open " + snap.artist + " in Spotify" : "Artist"
+        );
       }
-      var artistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify and press play");
-      if (artistBtn.textContent !== artistText) artistBtn.textContent = artistText;
-      if (artistBtn.title !== artistText) artistBtn.title = artistText;
-      // Only a real artist name navigates; placeholders stay inert.
-      artistBtn.disabled = !snap.artist;
-      artistBtn.setAttribute(
-        "aria-label",
-        snap.artist ? "Open " + snap.artist + " in Spotify" : "Artist"
-      );
 
       // Playing-from context (playlist / mix name). Hidden when unknown —
       // never placeholder text. The button opens it via the adapter.
@@ -1391,8 +1483,10 @@
         miniTitle.textContent = titleEl.textContent;
       }
       if (miniTitle.title !== titleEl.title) miniTitle.title = titleEl.title;
-      var miniArtistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify");
-      if (miniArtist.textContent !== miniArtistText) miniArtist.textContent = miniArtistText;
+      if (!isLoading) {
+        var miniArtistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify");
+        if (miniArtist.textContent !== miniArtistText) miniArtist.textContent = miniArtistText;
+      }
 
       if (snap.artwork && snap.artwork !== currentArtwork) {
         // A swipe is waiting for the new cover: fly it in from the side it
@@ -1443,12 +1537,15 @@
       if (awaitingArt && snap.track && snap.track === awaitingArt.track) {
         // No track change (yet): previous restarted the current song, or
         // the action did nothing (e.g. next at queue end). Don't sit on
-        // an empty stage for 3s — glide home as soon as we can tell.
+        // an empty stage — glide home as soon as we can tell (restart
+        // drops the clock by >3s; a dead-end action resolves on a short
+        // 800ms beat instead of the old 1.5s stare).
         var el2 = nowMs() - (awaitingArt.t0 || 0);
         var posNow = snap.currentTime || 0;
+        var startPos = awaitingArt.pos || 0;
         var restarted =
-          awaitingArt.dir > 0 && posNow < (awaitingArt.pos || 0) - 5;
-        if (restarted || el2 > 1500) {
+          awaitingArt.dir > 0 && startPos > 3 && posNow + 3 < startPos;
+        if (restarted || el2 > 800) {
           if (awaitingArt.timer) {
             try {
               window.clearTimeout(awaitingArt.timer);
