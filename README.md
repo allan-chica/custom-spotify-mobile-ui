@@ -34,13 +34,20 @@ Buttons prefer `data-testid` (`control-button-shuffle`, `control-button-skip-bac
 `context-item-link`, …) with `aria-label` fallbacks (English + a few locales)
 and structural fallbacks (e.g. neighbours of the play toggle for prev/next).
 
-State reads:
+State reads (empty string when nothing is loaded — never site chrome):
 
 - `isPlaying()` — play/pause toggle's `aria-label` (`Pause*` ⇒ playing).
 - Shuffle — `aria-checked` / `data-active`, else "Disable…" label ⇒ on.
 - Repeat — returns `off | context | track` from `aria-checked` (`mixed` ⇒ track)
   and "Enable repeat one" / "Disable repeat" labels.
-- Like — button inside `now-playing-widget`, `aria-checked` or Add/Remove label.
+- Like — `button[data-testid="add-button"]` first, else a like-mentioning
+  button strictly inside the widget/player (never document-wide, never
+  "Dislike"); state from `aria-checked`/`aria-pressed`/`data-active`, then
+  Add-vs-Remove label decoding.
+- Track — `context-item-link`, else `/track/` or `/episode/` links only
+  (podcasts included); a lone page footer is never mistaken for the player,
+  so logged-out pages report "" instead of About/Jobs links.
+- Artist — `/artist/` or `/show/` links (or their text parent) only.
 - Time/duration — progress slider (`value`/`max` in ms) first, time texts second.
 - Artwork — best of several sources, see below. `getArtwork()` keeps its
   signature; the UI never learns where the URL came from.
@@ -95,21 +102,22 @@ SpotMobile.spotify.getArtworkCandidates()
 ## UI: dark "Current Track" concept
 
 `ui.js` + `style.css` implement the attached concept in dark mode: header
-with circular chevron/like buttons around a "Current Track" label, times
-above a blob-masked artwork ringed by a seekable progress loop (tap/drag
-the ring, or focus it and use arrows/Home/End), centered uppercase titles,
-controls in concept order (repeat, previous, play, next, shuffle) with a
-cream play button, a Lyrics row that opens Spotify's lyrics, and a slim
-Queue/Devices/volume aux row. No lyric text is faked — only real Spotify
-state is shown. All Spotify access still goes through the adapter.
+with circular chevron/like buttons around a "Current Track" label, large
+squircle artwork, a slim seekable progress line with flanking times beneath
+it, centered uppercase titles, controls in concept order (repeat, previous,
+play, next, shuffle) with a cream play button, a Lyrics row that opens
+Spotify's lyrics (no divider), and a slim Queue/Devices/volume aux row.
+No lyric text is faked — only real Spotify state is shown. All Spotify
+access still goes through the adapter.
 
 Notes on the concept adaptation:
 
-- The progress loop is a generated symmetric blob (even-frequency cosine
-  modulation, bbox center exactly on the artwork center), seekable by
-  tap/drag angle plus keyboard. Playback paints an interpolated estimate
-  every animation frame (rebased against Spotify ~1/sec), so the dot glides
-  instead of stepping at snapshot cadence; ARIA updates stay at 1Hz.
+- Playback paints an interpolated estimate every animation frame (rebased
+  against Spotify ~1/sec), so progress glides instead of stepping at
+  snapshot cadence; ARIA updates stay at 1Hz. Rebase uses a drift leash —
+  hard snaps only on track/play-state changes or >1.5s drift — because
+  Spotify reports whole seconds and naive snapping caused a visible yank
+  every beat.
 - Icons are redrawn thin (1.5px strokes, plain triangles, rounded pause
   bars) to match the reference's delicate line style.
 - The card follows the OS/browser theme automatically via
@@ -117,6 +125,16 @@ Notes on the concept adaptation:
   mode. Same geometry, palette-only swap, no reload needed.
 - Aux-row leading edge aligns with the Lyrics label; stage/ring/blob share
   one center axis.
+- Dragging the artwork sideways changes tracks (left = next, right =
+  previous): the art follows the finger live, flies out past the threshold,
+  and the incoming cover glides in when Spotify delivers the new track.
+  Taps and mostly-vertical drags do nothing; buttons remain the accessible
+  path. Native image-dragging is disabled so PC mouse drags swipe instead
+  of grabbing the file. If previous restarts the current song (Spotify
+  behavior past ~3s) or the action is a no-op, the art glides home as soon
+  as the snapshot proves it — never a 3s empty stage, never a stuck swipe.
+  The blob now ripples harder (2nd/4th/6th/8th harmonics, still
+  mirror-symmetric on all four sides with its center on the artwork).
 
 ## Mobile scaling: measured, not hardcoded
 

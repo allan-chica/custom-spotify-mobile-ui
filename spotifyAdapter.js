@@ -201,9 +201,26 @@
         return f;
       }
     }
-    if (footers.length === 1) {
-      cachedPlayerRoot = footers[0];
-      return footers[0];
+    // A lone <footer> is NOT necessarily the player: logged-out pages have
+    // a site footer (About / Jobs / … links). Only accept a footer that
+    // hosts a Play/Pause toggle, otherwise keep looking (or return null).
+    for (var k = 0; k < footers.length; k++) {
+      var fb = footers[k];
+      if (fb.querySelectorAll) {
+        var fbtns = [];
+        try {
+          fbtns = fb.querySelectorAll("button");
+        } catch (e) {
+          fbtns = [];
+        }
+        for (var b = 0; b < fbtns.length; b++) {
+          var bl = norm(fbtns[b].getAttribute("aria-label"));
+          if (bl === "play" || bl === "pause" || /paus/.test(bl)) {
+            cachedPlayerRoot = fb;
+            return fb;
+          }
+        }
+      }
     }
     // 3. Ancestor of the known play/pause button.
     var viaBtn = rootFromPlayPauseAncestor();
@@ -339,22 +356,41 @@
   function findLikeButton() {
     var widget = findWidget();
     var scope = widget || findPlayer();
-    function search(root) {
-      if (!root || !root.querySelectorAll) return null;
-      var btns = root.querySelectorAll("button");
-      for (var i = 0; i < btns.length; i++) {
-        var label = norm(btns[i].getAttribute("aria-label"));
-        if (!label) continue;
-        if (
-          includesAny(label, LABELS.likeAdd) ||
-          includesAny(label, LABELS.likeRemove)
-        ) {
-          return btns[i];
-        }
+    function scoped(sel) {
+      if (scope && scope.querySelector) {
+        try {
+          var found = scope.querySelector(sel);
+          if (found) return found;
+        } catch (e) {}
       }
       return null;
     }
-    return search(scope) || search(document);
+    // Dedicated testid first (Spotify's like toggle in the widget).
+    var byTid = scoped('button[data-testid="add-button"]');
+    if (byTid) return byTid;
+    // Otherwise any button in the widget/player scope mentioning like.
+    // Strong phrases first, then a bare "like" (never "dislike": podcast
+    // thumbs-down contains "like" but means the opposite). Scoped tightly
+    // on purpose — a document-wide first match could be some other button.
+    var btns = [];
+    if (scope && scope.querySelectorAll) {
+      try {
+        btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+      } catch (e) {
+        btns = [];
+      }
+    }
+    var strong = LABELS.likeAdd.concat(LABELS.likeRemove);
+    for (var i = 0; i < btns.length; i++) {
+      if (includesAny(btns[i].getAttribute("aria-label"), strong)) return btns[i];
+    }
+    for (var j = 0; j < btns.length; j++) {
+      var lj = norm(btns[j].getAttribute("aria-label"));
+      if (lj && lj.indexOf("like") !== -1 && lj.indexOf("dislike") === -1) {
+        return btns[j];
+      }
+    }
+    return null;
   }
 
   function findSideButton(kind) {
@@ -414,37 +450,30 @@
   function findTrackElement() {
     var widget = findWidget() || findPlayer();
     if (!widget || !widget.querySelector) return null;
+    // Never fall back to a bare <a>: on pages without a loaded track that
+    // happily matches site-chrome links (About, Jobs, …). Only track-like
+    // targets count (songs + podcast episodes).
     return (
       widget.querySelector('[data-testid="' + TESTIDS.contextLink + '"]') ||
-      widget.querySelector('a[href*="/track/"]') ||
-      widget.querySelector("a")
+      widget.querySelector('a[href*="/track/"], a[href*="/episode/"]')
     );
   }
 
   function findArtistElement() {
     var widget = findWidget() || findPlayer();
     if (!widget || !widget.querySelectorAll) return null;
-    // Spotify renders artists as links to /artist/ plus a subtitle container.
-    var artistLink = widget.querySelector('a[href*="/artist/"]');
-    if (artistLink && artistLink.parentElement) {
-      // Parent usually holds the full "Artist1, Artist2" text.
-      return artistLink.parentElement;
+    // Artists link to /artist/, podcasts to their /show/. Anything else
+    // (bare links, stray spans) is site chrome, not the performer.
+    var artistLink = widget.querySelector('a[href*="/artist/"], a[href*="/show/"]');
+    if (!artistLink) return null;
+    var trackEl = findTrackElement();
+    var p = artistLink.parentElement;
+    // Parent usually holds the full "Artist1, Artist2" text — unless it is
+    // the widget itself or also wraps the track title (then it is a blob).
+    if (p && p !== widget && !(trackEl && p.contains && p.contains(trackEl))) {
+      return p;
     }
-    var all = widget.querySelectorAll("a");
-    if (all.length > 1) return all[1];
-    var spans = widget.querySelectorAll("span");
-    // Heuristic: subtitle span (short, below title).
-    for (var i = 0; i < spans.length; i++) {
-      var t = (spans[i].textContent || "").trim();
-      if (t && t.length < 120 && spans[i].childElementCount === 0) {
-        var titleEl = findTrackElement();
-        if (titleEl && spans[i] !== titleEl && t !== (titleEl.textContent || "").trim()) {
-          // Likely the artist line (second distinct short text).
-          return spans[i];
-        }
-      }
-    }
-    return artistLink || null;
+    return artistLink;
   }
 
   /* ---------- Artwork: multi-source, best-quality ----------
@@ -1083,10 +1112,22 @@
   function isLiked() {
     var btn = findLikeButton();
     if (!btn) return false;
+    // Whatever tristate attribute Spotify uses wins over label guessing.
     var checked = btn.getAttribute("aria-checked");
     if (checked !== null) return checked === "true";
+    var pressed = btn.getAttribute("aria-pressed");
+    if (pressed !== null) return pressed === "true";
+    var active = btn.getAttribute("data-active");
+    if (active !== null) return active === "true";
     var label = norm(btn.getAttribute("aria-label"));
-    return includesAny(label, LABELS.likeRemove);
+    if (includesAny(label, LABELS.likeRemove)) return true;
+    if (includesAny(label, LABELS.likeAdd)) return false;
+    // Last resort on an already-identified like button: labels promising
+    // removal ("unsave", "retirer", …) mean it is currently saved.
+    if (/\b(remove|unsave|retirer|quitar|entfernen|rimuovi|remover)\b/.test(label)) {
+      return true;
+    }
+    return false;
   }
 
   function getVolume() {

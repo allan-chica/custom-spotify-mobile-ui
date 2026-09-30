@@ -1,8 +1,7 @@
 /* Spotify Mobile Prototype — ui.js
  *
  * Custom mobile-style player UI (dark adaptation of the "Current Track"
- * concept: header with circular buttons, times above a blob-masked artwork
- * ringed by a seekable progress loop, centered titles, minimal controls,
+ * concept: header with circular buttons, squircle artwork with a slim seekable progress line beneath, centered titles, minimal controls,
  * lyrics row). This file must ONLY talk to Spotify through
  * window.SpotMobile.spotify (the adapter). No direct document.querySelector
  * calls into Spotify's DOM are allowed here — only queries scoped to our
@@ -40,30 +39,7 @@
     note: '<svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
   };
 
-  // Organic blob loop the progress ring follows (viewBox 240x240, starts at
-  // top, winds clockwise so angle-seek math matches the stroke direction).
-  // Generated (not hand-drawn): radius modulated by even-frequency cosines
-  // only, so the loop is symmetric about both axes and its bbox center is
-  // exactly (120,120) — the artwork blob and the ring share that center.
-  var RING_PATH =
-    "M120,26.4C125.4,26.4 130.9,27 136.2,28.1C141.5,29.2 146.7,30.9 151.7,32.9" +
-    "C156.7,34.8 161.5,37.3 166.2,40C170.9,42.6 175.3,45.6 179.7,48.8" +
-    "C184.1,52 188.4,55.4 192.5,59.2C196.5,63 200.6,67 204.2,71.4" +
-    "C207.8,75.8 211.3,80.6 214.1,85.8C216.8,90.9 219.3,96.5 220.8,102.2" +
-    "C222.3,107.9 223.2,114.1 223.2,120C223.2,125.9 222.3,132.1 220.8,137.8" +
-    "C219.3,143.5 216.8,149.1 214.1,154.2C211.3,159.4 207.8,164.2 204.2,168.6" +
-    "C200.6,173 196.5,177 192.5,180.8C188.4,184.6 184.1,188 179.7,191.2" +
-    "C175.3,194.4 170.9,197.4 166.2,200C161.5,202.7 156.7,205.2 151.7,207.1" +
-    "C146.7,209.1 141.5,210.8 136.2,211.9C130.9,213 125.4,213.6 120,213.6" +
-    "C114.6,213.6 109.1,213 103.8,211.9C98.5,210.8 93.3,209.1 88.3,207.1" +
-    "C83.3,205.2 78.5,202.7 73.8,200C69.1,197.4 64.7,194.4 60.3,191.2" +
-    "C55.9,188 51.6,184.6 47.5,180.8C43.5,177 39.4,173 35.8,168.6" +
-    "C32.2,164.2 28.7,159.4 25.9,154.2C23.2,149.1 20.7,143.5 19.2,137.8" +
-    "C17.7,132.1 16.8,125.9 16.8,120C16.8,114.1 17.7,107.9 19.2,102.2" +
-    "C20.7,96.5 23.2,90.9 25.9,85.8C28.7,80.6 32.2,75.8 35.8,71.4" +
-    "C39.4,67 43.5,63 47.5,59.2C51.6,55.4 55.9,52 60.3,48.8" +
-    "C64.7,45.6 69.1,42.6 73.8,40C78.5,37.3 83.3,34.8 88.3,32.9" +
-    "C93.3,30.9 98.5,29.2 103.8,28.1C109.1,27 114.6,26.4 120,26.4Z";
+
 
   function formatTime(totalSeconds) {
     var s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -87,6 +63,7 @@
     root.id = "spm-root";
     root.innerHTML =
       '<div class="spm-card" role="region" aria-label="Mobile player">' +
+
       '<div class="spm-glow" aria-hidden="true"></div>' +
       '<header class="spm-top">' +
       '<button class="spm-circle spm-collapse" type="button" aria-label="Minimize player">' +
@@ -97,21 +74,21 @@
       SVG.heart +
       "</button>" +
       "</header>" +
-      '<div class="spm-times"><span class="spm-cur">0:00</span><span class="spm-sep">|</span><span class="spm-dur">0:00</span></div>' +
       '<div class="spm-stage">' +
-      '<svg class="spm-ring" viewBox="0 0 240 240" aria-hidden="true">' +
-      '<path class="spm-ring-track" d="' + RING_PATH + '"/>' +
-      '<path class="spm-ring-fill" d="' + RING_PATH + '"/>' +
-      '<circle class="spm-ring-dot" r="5" cx="120" cy="26.4"/>' +
-      "</svg>" +
-      '<div class="spm-ring-hit" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>' +
       '<div class="spm-blob">' +
-      '<img class="spm-art" alt="Album artwork" />' +
+      '<img class="spm-art" alt="Album artwork" draggable="false" />' +
       '<div class="spm-art-fallback" aria-hidden="true">' + SVG.note + "</div>" +
       "</div>" +
       "</div>" +
       '<div class="spm-titles"><h2 class="spm-title">Nothing playing</h2>' +
       '<p class="spm-artist">Open Spotify and press play</p></div>' +
+      '<div class="spm-progress">' +
+      '<div class="spm-bar" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
+      '<div class="spm-track"><div class="spm-fill"></div></div>' +
+      '<div class="spm-knob"></div>' +
+      "</div>" +
+      '<div class="spm-timerow"><span class="spm-cur">0:00</span><span class="spm-dur">0:00</span></div>' +
+      "</div>" +
       '<div class="spm-main">' +
       '<button class="spm-mini spm-repeat" type="button" aria-label="Enable repeat" aria-pressed="false">' + SVG.repeat + '<span class="spm-badge">1</span></button>' +
       '<button class="spm-mini spm-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
@@ -134,7 +111,7 @@
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
       '<button class="spm-fab" type="button" aria-label="Open mobile player">' +
-      '<img class="spm-fab-art" alt="" />' +
+      '<img class="spm-fab-art" alt="" draggable="false" />' +
       '<span class="spm-fab-play">' + SVG.play + "</span>" +
       "</button>";
 
@@ -153,10 +130,11 @@
     var nextBtn = q(".spm-next");
     var shuffleBtn = q(".spm-shuffle");
     var repeatBtn = q(".spm-repeat");
-    var ringSvg = q(".spm-ring");
-    var ringFill = q(".spm-ring-fill");
-    var ringDot = q(".spm-ring-dot");
-    var ringHit = q(".spm-ring-hit");
+    var bar = q(".spm-bar");
+    var fill = q(".spm-fill");
+    var knob = q(".spm-knob");
+    var blob = q(".spm-blob");
+
     var curEl = q(".spm-cur");
     var durEl = q(".spm-dur");
     var statusEl = q(".spm-status");
@@ -176,7 +154,6 @@
     var rafId = 0;
     var currentArtwork = "";
     var envInfo = null;
-    var ringLen = 0;
 
     /* Responsive environment: on phones Spotify renders its desktop layout
      * in a wide layout viewport that is scaled down to fit the glass, which
@@ -296,18 +273,15 @@
       muteBtn.innerHTML = v <= 0.01 ? SVG.mute : SVG.volume;
     });
 
-    // --- ring progress: measure once, paint cheaply, seek by angle ---
+    // --- linear progress: slim line under the artwork, tap/drag to seek ---
     // Smoothness design: Spotify-DOM reads (~1/sec + snapshots) only rebase
-    // an anchor; every animation frame paints the INTERPOLATED position, so
-    // the dot glides at 60fps instead of jumping at snapshot cadence. The
-    // hot loop does style writes only — no DOM reads, no layout.
+    // an anchor; every animation frame paints the INTERPOLATED position.
+    var lastAriaSec = -1;
     var anchorTime = 0;
     var anchorDur = 0;
     var anchorStamp = 0;
     var anchorPlaying = false;
     var lastRebase = 0;
-    var lastAriaSec = -1;
-    var ringLUT = null;
 
     function nowMs() {
       try {
@@ -330,82 +304,34 @@
       return est < 0 ? 0 : est;
     }
 
-    function measureRing() {
-      try {
-        if (ringFill && ringFill.getTotalLength) {
-          ringLen = ringFill.getTotalLength();
-          ringFill.style.strokeDasharray = String(ringLen);
-          // Lookup table: 121 samples around the loop; dotAt() lerps
-          // between neighbours instead of calling getPointAtLength per
-          // frame (cheaper, and immune to per-call rounding jitter).
-          ringLUT = [];
-          for (var i = 0; i <= 120; i++) {
-            var pt = ringFill.getPointAtLength((ringLen * i) / 120);
-            ringLUT.push([pt.x, pt.y]);
-          }
-        }
-      } catch (e) {
-        ringLen = 0;
-        ringLUT = null;
-      }
-    }
-
-    function dotAt(ratio) {
-      if (!ringDot) return;
-      var r = Math.max(0, Math.min(1, ratio));
-      try {
-        if (ringLUT && ringLUT.length === 121) {
-          var pos = r * 120;
-          var i0 = Math.floor(pos);
-          var i1 = Math.min(120, i0 + 1);
-          var f = pos - i0;
-          var ax = ringLUT[i0][0];
-          var ay = ringLUT[i0][1];
-          ringDot.setAttribute("cx", (ax + (ringLUT[i1][0] - ax) * f).toFixed(1));
-          ringDot.setAttribute("cy", (ay + (ringLUT[i1][1] - ay) * f).toFixed(1));
-        } else if (ringLen && ringFill.getPointAtLength) {
-          var pt = ringFill.getPointAtLength(r * ringLen);
-          ringDot.setAttribute("cx", pt.x.toFixed(1));
-          ringDot.setAttribute("cy", pt.y.toFixed(1));
-        }
-      } catch (e) {}
-    }
-
     function renderBar(current, duration) {
       var ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
-      if (ringLen && ringFill) {
-        ringFill.style.strokeDashoffset = String(ringLen * (1 - ratio));
-      }
-      dotAt(ratio);
+      if (fill) fill.style.transform = "scaleX(" + ratio + ")";
+      if (knob) knob.style.left = ratio * 100 + "%";
       // ARIA churn feeds MutationObservers (and screen readers); 1Hz is
       // plenty, the visuals already move every frame.
       var sec = Math.round(current);
       if (sec !== lastAriaSec) {
         lastAriaSec = sec;
-        ringHit.setAttribute("aria-valuemax", String(Math.round(duration)));
-        ringHit.setAttribute("aria-valuenow", String(sec));
-        ringHit.setAttribute(
+        bar.setAttribute("aria-valuemax", String(Math.round(duration)));
+        bar.setAttribute("aria-valuenow", String(sec));
+        bar.setAttribute(
           "aria-valuetext",
           formatTime(current) + " of " + formatTime(duration)
         );
       }
     }
 
-    // 0 at top, clockwise — matches the ring path's winding.
     function ratioFromEvent(e) {
-      var r = ringSvg.getBoundingClientRect();
-      var cx = r.left + r.width / 2;
-      var cy = r.top + r.height / 2;
-      var px = e.clientX !== undefined ? e.clientX : cx;
-      var py = e.clientY !== undefined ? e.clientY : cy;
-      var a = Math.atan2(px - cx, -(py - cy)); // -PI..PI, 0 = top
-      return ((a / (2 * Math.PI)) + 1) % 1;
+      var r = bar.getBoundingClientRect();
+      var x = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : r.left);
+      return Math.max(0, Math.min(1, (x - r.left) / Math.max(1, r.width)));
     }
 
-    ringHit.addEventListener("pointerdown", function (e) {
+    bar.addEventListener("pointerdown", function (e) {
       seeking = true;
       try {
-        ringHit.setPointerCapture && ringHit.setPointerCapture(e.pointerId);
+        bar.setPointerCapture && bar.setPointerCapture(e.pointerId);
       } catch (err) {}
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       seekPreview = ratioFromEvent(e) * dur;
@@ -413,13 +339,15 @@
       if (curEl) curEl.textContent = formatTime(seekPreview);
       e.preventDefault();
     });
-    ringHit.addEventListener("pointermove", function (e) {
+
+    bar.addEventListener("pointermove", function (e) {
       if (!seeking) return;
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       seekPreview = ratioFromEvent(e) * dur;
       renderBar(seekPreview, dur);
       if (curEl) curEl.textContent = formatTime(seekPreview);
     });
+
     function endSeek(e) {
       if (!seeking) return;
       seeking = false;
@@ -432,11 +360,13 @@
         if (curEl) curEl.textContent = formatTime(target);
       }
     }
-    ringHit.addEventListener("pointerup", endSeek);
-    ringHit.addEventListener("pointercancel", function () {
+
+    bar.addEventListener("pointerup", endSeek);
+    bar.addEventListener("pointercancel", function () {
       seeking = false;
     });
-    ringHit.addEventListener("keydown", function (e) {
+
+    bar.addEventListener("keydown", function (e) {
       var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
       var cur = (lastSnap && lastSnap.currentTime) || spotify.getCurrentTime() || 0;
       if (e.key === "ArrowRight") {
@@ -454,8 +384,131 @@
       }
     });
 
+    // --- art swipe: drag the artwork sideways for previous / next track ---
+    // Lives on the artwork, so it never fights the progress-bar seek area.
+    // The art follows the finger live; past the threshold it flies out and
+    // the newly arriving cover flies in from the other side. A tap (no
+    // real movement) does nothing at all.
+    var swipe = null; // { id, x0, y0, dx, t0, active }
+    var awaitingArt = null; // { dir, timer } while the new cover travels in
+
+    function blobWidth() {
+      try {
+        return blob.getBoundingClientRect().width || 200;
+      } catch (e) {
+        return 200;
+      }
+    }
+
+    function blobPose(dxPx, opacity) {
+      blob.style.transform = "translateX(" + Math.round(dxPx) + "px)";
+      blob.style.opacity = String(opacity);
+    }
+
+    function blobRest() {
+      blob.style.transform = "";
+      blob.style.opacity = "";
+    }
+
+    blob.addEventListener("pointerdown", function (e) {
+      if (awaitingArt) return; // a fly animation is already in flight
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      try {
+        e.preventDefault(); // no native image-drag, no text selection
+      } catch (err2) {}
+      swipe = {
+        id: e.pointerId,
+        x0: e.clientX,
+        y0: e.clientY,
+        dx: 0,
+        t0: nowMs(),
+        active: false,
+      };
+      try {
+        blob.setPointerCapture && blob.setPointerCapture(e.pointerId);
+      } catch (err) {}
+    });
+
+    blob.addEventListener("pointermove", function (e) {
+      if (!swipe || e.pointerId !== swipe.id) return;
+      var dx = e.clientX - swipe.x0;
+      var dy = e.clientY - swipe.y0;
+      if (!swipe.active) {
+        if (Math.abs(dx) < 12) return;
+        // Mostly vertical: not our gesture, let the page scroll.
+        if (Math.abs(dx) < Math.abs(dy) * 1.2) {
+          swipe = null;
+          return;
+        }
+        swipe.active = true;
+        blob.classList.add("spm-dragging"); // follow finger 1:1, no lag
+      }
+      swipe.dx = dx;
+      var w = blobWidth();
+      var clamped = Math.max(-w * 0.6, Math.min(w * 0.6, dx));
+      blobPose(clamped, Math.max(0.25, 1 - Math.abs(clamped) / (w * 1.2)));
+    });
+
+    function swipeEnd(e) {
+      if (!swipe || (e && e.pointerId !== swipe.id)) return;
+      var s = swipe;
+      swipe = null;
+      blob.classList.remove("spm-dragging");
+      if (!s.active) return; // plain tap: art stays exactly as it was
+      var dt = Math.max(1, nowMs() - s.t0);
+      var vel = Math.abs(s.dx) / dt; // px per ms
+      var th = Math.max(48, blobWidth() * 0.28);
+      if (Math.abs(s.dx) > th || (Math.abs(s.dx) > th * 0.45 && vel > 0.5)) {
+        commitSwipe(s.dx < 0 ? -1 : 1);
+      } else {
+        blobRest(); // CSS transition springs it home
+      }
+    }
+
+    blob.addEventListener("pointerup", swipeEnd);
+    blob.addEventListener("pointercancel", function () {
+      swipe = null;
+      blob.classList.remove("spm-dragging");
+      blobRest();
+    });
+
+    function commitSwipe(dir) {
+      // dir -1 (swiped left) = next track, +1 (swiped right) = previous.
+      var w = blobWidth();
+      blobPose(dir * w * 1.25, 0);
+      if (dir < 0) spotify.next();
+      else spotify.previous();
+      if (awaitingArt && awaitingArt.timer) {
+        try {
+          window.clearTimeout(awaitingArt.timer);
+        } catch (e) {}
+      }
+      var timer = 0;
+      try {
+        timer = window.setTimeout(function () {
+          // Spotify never delivered a new track: glide the old art home.
+          awaitingArt = null;
+          blobRest();
+        }, 3000);
+      } catch (e) {}
+      awaitingArt = { dir: dir, timer: timer };
+      awaitingArt.t0 = nowMs();
+      awaitingArt.pos = lastSnap && lastSnap.currentTime ? lastSnap.currentTime : 0;
+      awaitingArt.track = lastSnap && lastSnap.track ? lastSnap.track : "";
+    }
+
+    function flyIn(dir) {
+      var w = blobWidth();
+      blob.classList.add("spm-dragging"); // hold the starting pose, no slide
+      blobPose(-dir * w * 0.9, 0);
+      void blob.offsetWidth; // reflow so the transition below animates
+      blob.classList.remove("spm-dragging");
+      blobRest(); // CSS transition glides it home
+    }
+
     // --- snapshot rendering (no full DOM rebuilds) ---
     function render(snap) {
+      var prevSnap = lastSnap;
       lastSnap = snap;
       var hasTrack = !!(snap.track || snap.artist);
 
@@ -470,16 +523,66 @@
       if (artistEl.textContent !== artistText) artistEl.textContent = artistText;
 
       if (snap.artwork && snap.artwork !== currentArtwork) {
+        // A swipe is waiting for the new cover: fly it in from the side it
+        // was swiped toward. Same-cover consecutive tracks (identical URL)
+        // still count as an arrival via the track change itself.
+        var swipeDir = 0;
+        if (awaitingArt) {
+          var trackWas = prevSnap && prevSnap.track ? prevSnap.track : "";
+          var trackNow = snap.track || "";
+          var urlIsNew = snap.artwork !== currentArtwork;
+          var trackIsNew =
+            trackWas !== "" && trackNow !== "" && trackNow !== trackWas;
+          if (urlIsNew || trackIsNew) {
+            swipeDir = awaitingArt.dir;
+            if (awaitingArt.timer) {
+              try {
+                window.clearTimeout(awaitingArt.timer);
+              } catch (e) {}
+            }
+            awaitingArt = null;
+          }
+        }
         currentArtwork = snap.artwork;
         art.src = snap.artwork;
         art.classList.remove("spm-loaded");
         fabArt.src = snap.artwork;
         fabArt.style.display = "block";
+        if (swipeDir) flyIn(swipeDir);
       } else if (!snap.artwork && currentArtwork) {
         currentArtwork = "";
         art.removeAttribute("src");
         fabArt.removeAttribute("src");
         fabArt.style.display = "none";
+      } else if (awaitingArt && snap.track && prevSnap && prevSnap.track && snap.track !== prevSnap.track) {
+        // Same cover, new track (identical artwork URL): nothing to swap,
+        // so just glide the art home instead of waiting out the timer.
+        var homeDir = awaitingArt.dir;
+        if (awaitingArt.timer) {
+          try {
+            window.clearTimeout(awaitingArt.timer);
+          } catch (e2) {}
+        }
+        awaitingArt = null;
+        flyIn(homeDir);
+      }
+      if (awaitingArt && snap.track && snap.track === awaitingArt.track) {
+        // No track change (yet): previous restarted the current song, or
+        // the action did nothing (e.g. next at queue end). Don't sit on
+        // an empty stage for 3s — glide home as soon as we can tell.
+        var el2 = nowMs() - (awaitingArt.t0 || 0);
+        var posNow = snap.currentTime || 0;
+        var restarted =
+          awaitingArt.dir > 0 && posNow < (awaitingArt.pos || 0) - 5;
+        if (restarted || el2 > 1500) {
+          if (awaitingArt.timer) {
+            try {
+              window.clearTimeout(awaitingArt.timer);
+            } catch (e3) {}
+          }
+          awaitingArt = null;
+          blobRest();
+        }
       }
       var artVisible = !!snap.artwork;
       art.style.display = artVisible ? "block" : "none";
@@ -512,15 +615,20 @@
         rep === "track" ? "Disable repeat" : rep === "context" ? "Enable repeat one" : "Enable repeat"
       );
 
-      // Like.
-      likeBtn.classList.toggle("spm-liked", !!snap.liked);
-      likeBtn.setAttribute("aria-pressed", snap.liked ? "true" : "false");
+      // Like. innerHTML is compared via a data flag, not the markup
+      // itself: the browser re-serializes SVG on read (e.g. <path/> ->
+      // <path></path>), so a string compare would rewrite every render.
+      var wantLiked = !!snap.liked;
+      var shownLiked = likeBtn.getAttribute("data-liked") === "1";
+      likeBtn.classList.toggle("spm-liked", wantLiked);
+      likeBtn.setAttribute("aria-pressed", wantLiked ? "true" : "false");
       likeBtn.setAttribute(
         "aria-label",
-        snap.liked ? "Remove from Liked Songs" : "Add to Liked Songs"
+        wantLiked ? "Remove from Liked Songs" : "Add to Liked Songs"
       );
-      if ((snap.liked && likeBtn.innerHTML !== SVG.heartFill) || (!snap.liked && likeBtn.innerHTML !== SVG.heart)) {
-        likeBtn.innerHTML = snap.liked ? SVG.heartFill : SVG.heart;
+      if (wantLiked !== shownLiked) {
+        likeBtn.innerHTML = wantLiked ? SVG.heartFill : SVG.heart;
+        likeBtn.setAttribute("data-liked", wantLiked ? "1" : "0");
       }
 
       // Duration + volume (skip while dragging either control).
@@ -544,12 +652,32 @@
         setStatus("");
       }
 
-      // (Re)start the smooth progress ticker.
-      rebase(
-        snap.currentTime || 0,
-        snap.duration || 0,
-        !!(snap.isPlaying && snap.playerReady)
+      // Re-anchor the smooth clock. Spotify reports whole seconds, so a
+      // hard snap on every snapshot would yank the gliding estimate back
+      // to an integer (the visible "jump"). Instead: hard rebase only on
+      // track / play-state changes or large drift (seeks, jumps); otherwise
+      // leash the anchor halfway toward truth — converges in a beat or two
+      // with no visible step.
+      var playingNow = !!(snap.isPlaying && snap.playerReady);
+      var snapT = snap.currentTime || 0;
+      anchorDur = snap.duration || 0;
+      var trackChanged = !!(
+        hasTrack &&
+        prevSnap &&
+        prevSnap.track &&
+        snap.track !== prevSnap.track
       );
+      if (!hasTrack || trackChanged || playingNow !== anchorPlaying) {
+        rebase(snapT, anchorDur, playingNow);
+      } else {
+        var drift = snapT - estimate();
+        if (Math.abs(drift) > 1.5) {
+          rebase(snapT, anchorDur, playingNow);
+        } else {
+          anchorTime += drift * 0.5;
+        }
+      }
+      // (Re)start the smooth progress ticker.
       if (snap.isPlaying && !rafId && snap.playerReady) startTicker();
       if ((!snap.isPlaying || !snap.playerReady) && !seeking) {
         renderBar(snap.currentTime || 0, snap.duration || 0);
@@ -590,7 +718,15 @@
             if (d2) dur = d2;
           } catch (e) {}
           if (dur && cur > dur) cur = dur;
-          rebase(cur, dur, true);
+          // Same leash as snapshots: Spotify's integer seconds must not
+          // yank the fractional estimate.
+          anchorDur = dur;
+          var rdrift = cur - estimate();
+          if (Math.abs(rdrift) > 1.5) {
+            rebase(cur, dur, true);
+          } else {
+            anchorTime += rdrift * 0.5;
+          }
           var freshTrack = "";
           try {
             freshTrack = spotify.getCurrentTrack() || "";
@@ -618,7 +754,6 @@
     var unsubscribe = null;
     function mount(parent) {
       (parent || document.body).appendChild(root);
-      measureRing();
       applyEnvironment();
       watchEnvironment();
       try {

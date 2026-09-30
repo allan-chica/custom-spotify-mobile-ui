@@ -16,8 +16,6 @@
   --spm-faint: rgba(244, 241, 234, 0.32);
   --spm-line: rgba(244, 241, 234, 0.14);
   --spm-line-strong: rgba(244, 241, 234, 0.35);
-  --spm-hover: rgba(244, 241, 234, 0.07);
-  --spm-ring-track: rgba(244, 241, 234, 0.16);
   --spm-dot-ring: #101112;
   --spm-green: #1ed760;
   --spm-radius: 28px;
@@ -44,6 +42,15 @@
   box-sizing: border-box;
 }
 
+/* Never let the browser start a native image drag (PC grab hijack) or
+ * select anything inside our UI; gestures belong to us. */
+#spm-root img {
+  -webkit-user-drag: none;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
 /* ---------- Card ---------- */
 
 #spm-root .spm-card {
@@ -51,6 +58,7 @@
   width: min(360px, calc(var(--spm-vw) - 40px));
   max-height: min(92vh, 800px, var(--spm-vh));
   overflow-y: auto;
+  overflow-x: clip;
   scrollbar-width: none;
   padding: 18px 22px 12px;
   background: var(--spm-bg);
@@ -100,7 +108,7 @@
 }
 
 #spm-root button:focus-visible,
-#spm-root .spm-ring-hit:focus-visible {
+#spm-root .spm-bar:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 3px;
   border-radius: 12px;
@@ -149,97 +157,33 @@
   color: var(--spm-muted);
 }
 
-/* ---------- Times ---------- */
-
-#spm-root .spm-times {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin: 12px 0 4px;
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  font-variant-numeric: tabular-nums;
-  color: var(--spm-muted);
-}
-
-#spm-root .spm-sep {
-  color: var(--spm-faint);
-}
-
-#spm-root .spm-cur,
-#spm-root .spm-dur {
-  font-variant-numeric: tabular-nums;
-  min-width: 3.2em;
-}
-
-#spm-root .spm-cur {
-  text-align: right;
-}
-
-#spm-root .spm-dur {
-  text-align: left;
-}
-
-/* ---------- Stage: blob artwork + progress ring ---------- */
+/* ---------- Stage: squircle artwork ---------- */
 
 #spm-root .spm-stage {
   position: relative;
   width: min(100%, 264px);
   aspect-ratio: 1 / 1;
-  margin: 2px auto 0;
-}
-
-#spm-root .spm-ring {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-#spm-root .spm-ring-track,
-#spm-root .spm-ring-fill {
-  fill: none;
-  stroke-linecap: round;
-}
-
-#spm-root .spm-ring-track {
-  stroke: var(--spm-ring-track);
-  stroke-width: 1.4;
-}
-
-#spm-root .spm-ring-fill {
-  stroke: var(--spm-solid);
-  stroke-width: 2;
-}
-
-#spm-root .spm-ring-dot {
-  fill: var(--spm-solid);
-  stroke: var(--spm-dot-ring);
-  stroke-width: 1.5;
-}
-
-#spm-root .spm-ring-hit {
-  position: absolute;
-  inset: 0;
-  cursor: pointer;
-  touch-action: none;
-  border-radius: 50%;
+  margin: 14px auto 0;
 }
 
 #spm-root .spm-blob {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 70%;
+  position: relative;
+  width: 100%;
   aspect-ratio: 1 / 1;
-  transform: translate(-50%, -50%);
   overflow: hidden;
-  border-radius: 58% 42% 55% 45% / 48% 56% 44% 52%;
+  border-radius: 26%;
   background: linear-gradient(145deg, #232326, #141415);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  /* Swipe flights glide; finger-follow disables the transition (see
+   * .spm-dragging) so the art tracks 1:1 with zero lag. */
+  transition: transform 0.26s cubic-bezier(0.2, 0.9, 0.25, 1), opacity 0.26s ease;
+  touch-action: pan-y;
+  cursor: grab;
+}
+
+#spm-root .spm-blob.spm-dragging {
+  transition: none;
+  cursor: grabbing;
 }
 
 #spm-root .spm-art {
@@ -264,6 +208,93 @@
   color: rgba(244, 241, 234, 0.22);
 }
 
+/* ---------- Progress: slim line under the artwork ---------- */
+
+#spm-root .spm-progress {
+  margin-top: 14px;
+  padding: 0 2px;
+}
+
+#spm-root .spm-bar {
+  position: relative;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 8px;
+}
+
+#spm-root .spm-track {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  border-radius: 99px;
+  background: var(--spm-line);
+  overflow: hidden;
+}
+
+#spm-root .spm-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 99px;
+  background: var(--spm-solid);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+#spm-root .spm-knob {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--spm-solid);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.18s, transform 0.18s;
+  pointer-events: none;
+}
+
+#spm-root .spm-bar:hover .spm-knob,
+#spm-root .spm-bar:active .spm-knob,
+#spm-root .spm-bar:focus-visible .spm-knob {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+@media (hover: none) {
+  #spm-root .spm-knob {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+}
+
+#spm-root .spm-timerow {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--spm-faint);
+}
+
+#spm-root .spm-cur,
+#spm-root .spm-dur {
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2em;
+}
+
+#spm-root .spm-cur {
+  text-align: left;
+}
+
+#spm-root .spm-dur {
+  text-align: right;
+}
+
 /* ---------- Titles ---------- */
 
 #spm-root .spm-titles {
@@ -275,8 +306,7 @@
   margin: 0;
   font-size: 16px;
   font-weight: 750;
-  letter-spacing: 0.045em;
-  text-transform: uppercase;
+  letter-spacing: 0.015em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -391,9 +421,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--spm-line);
+  margin-top: 14px;
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -426,13 +454,20 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
   margin-top: 6px;
+  /* Shift the row so the first button's icon sits on the same edge as the
+   * "Lyrics" label above, while every button keeps symmetric padding so
+   * hover pills stay even on both sides. */
+  margin-left: -8px;
 }
 
 #spm-root .spm-ghost {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
   min-height: 40px;
   padding: 8px 10px;
   border-radius: 12px;
@@ -443,19 +478,14 @@
   transition: color 0.18s, background 0.18s;
 }
 
-/* First button's icon aligns with the "Lyrics" label above (no stray
- * left padding on the row's leading edge). */
-#spm-root .spm-ghost:first-child {
-  padding-left: 2px;
-}
-
 #spm-root .spm-ghost:hover {
   color: var(--spm-cream);
   background: var(--spm-hover);
 }
 
 #spm-root .spm-vol {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -479,8 +509,9 @@
 }
 
 #spm-root .spm-vol-slider {
-  flex: 1;
-  min-width: 60px;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
   appearance: none;
   -webkit-appearance: none;
   height: 3px;
@@ -633,6 +664,7 @@
 @media (prefers-reduced-motion: reduce) {
   #spm-root .spm-card,
   #spm-root .spm-art,
+  #spm-root .spm-blob,
   #spm-root .spm-circle,
   #spm-root .spm-play,
   #spm-root .spm-mini {
@@ -656,8 +688,6 @@
     --spm-faint: rgba(23, 23, 21, 0.38);
     --spm-line: rgba(23, 23, 21, 0.16);
     --spm-line-strong: rgba(23, 23, 21, 0.4);
-    --spm-hover: rgba(23, 23, 21, 0.07);
-    --spm-ring-track: rgba(23, 23, 21, 0.18);
     --spm-dot-ring: #f4f1ea;
     --spm-shadow: 0 24px 70px rgba(30, 25, 15, 0.28), 0 2px 10px rgba(30, 25, 15, 0.18);
   }
