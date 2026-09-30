@@ -48,15 +48,21 @@ State reads (empty string when nothing is loaded — never site chrome):
   (podcasts included); a lone page footer is never mistaken for the player,
   so logged-out pages report "" instead of About/Jobs links.
 - Artist — `/artist/` or `/show/` links (or their text parent) only.
-- Context — where the song plays from, as a link. Primary source is the
-  Now Playing view header itself: an `<a href="/playlist/…">` (or album /
-  artist / show / collection) wrapping a heading — no "Playing from" text
-  exists there, so href shape + heading descendant is the signal (query
-  params stripped, `/track/` + `/episode/` never count, player-bar links
-  never leak in). Fallback is the Queue's "Next from:" phrasing with strict
-  anti-spoof rules. Cached per track; "" when unknown and the UI hides the
-  line instead of guessing. Rendered as "From Mix hip hop", clickable, and
-  tapping it collapses the sheet so the destination is visible.
+  The name is a button that clicks Spotify's own artist link
+  (`context-item-info-artist`), so the artist page opens as in-app
+  navigation; placeholders stay inert.
+- Context — where the song plays from, as a tappable name (no "From"
+  prefix). Primary source is the Now Playing view header itself: an
+  `<a href="/playlist/…">` (or album / artist / show / collection) wrapping
+  a heading — no "Playing from" text exists there, so href shape + heading
+  descendant is the signal (query params stripped, `/track/` + `/episode/`
+  never count, player-bar links never leak in). Fallback is the Queue's
+  "Next from:" phrasing with strict anti-spoof rules. Tapping it clicks
+  Spotify's OWN header link (inside its React tree), so its router handles
+  it as in-app navigation — a copied URL from outside that tree forces a
+  full page load instead. Tapping playlist or artist always minimizes the
+  full player so the destination is visible. Cached per track; "" when
+  unknown and the UI hides the line instead of guessing.
 - Time/duration — progress slider (`value`/`max` in ms) first, time texts second.
 - Artwork — best of several sources, see below. `getArtwork()` keeps its
   signature; the UI never learns where the URL came from.
@@ -124,20 +130,26 @@ Mini-player + gestures:
 - Mini and full are two states of one component fed by the same snapshot
   (art, title, artist, play, like stay in sync in both). The mini is the
   collapsed state on every viewport, including desktop. State transitions
-  are staged and snappy (~110–150ms beats); `prefers-reduced-motion` gets
-  instant swaps.
+  hand off in ~60ms (outgoing starts sinking as the incoming view blooms,
+  so there is never a dead transparent frame); `prefers-reduced-motion`
+  gets instant swaps.
 - Mobile opens on the mini-player by default (first run; afterwards the
   remembered choice wins).
 - Mini-player: floating bar (art, title, artist, like, prev, play, next),
   same palette/borders/blur, light/dark aware, with a glossy progress
-  hairline hugging its top edge. Tap, swipe up, or swipe sideways to
-  expand / change tracks.
-- Full card collapses via downward swipe anywhere except controls, links,
-  and the bars; the card follows the finger 1:1 and snaps back under
-  ~max(64px, 15% height) (or 40px + fling). The card pins touch-action so
-  the page can never steal a collapse mid-drag (which froze it); the
-  volume slider is a custom pointer bar for the same reason. Horizontal
-  drags starting on the artwork stay owned by the track-swipe gesture.
+  hairline hugging its top edge that is itself a slider (drag + arrow
+  keys). Taps open instantly on pointerup (never waiting on the browser's
+  click); tap, swipe up to expand. Sideways drags on the mini do nothing
+  (swipe-to-skip was removed — it kept eating taps via accidental
+  commits); use the prev/next buttons instead. Quick, short touch slides
+  anywhere count as sloppy taps and never skip tracks.
+- Full card collapses via downward swipe from ANYWHERE except controls,
+  links, and the bars — including the artwork (one gesture owner decides
+  by dominant axis: horizontal-on-art swipes tracks, vertical-down
+  collapses). The card follows the finger 1:1 and snaps back under
+  ~max(56px, 12% height) (or 32px + fling). The card pins touch-action so
+  the page can never steal a gesture mid-drag; the volume slider is a
+  custom pointer bar for the same reason.
 - Like discovery: `add-button` testid, then like-mentioning buttons in the
   widget + player bar (never document-wide, never Dislike); state from
   checked/pressed/active, then Add-vs-Remove labels (past-tense "Added to"
@@ -147,6 +159,24 @@ Mini-player + gestures:
 - Transitions are staged (mini sinks as the card rises and vice versa) with
   shared artwork bridging the swap — never an abrupt display flip.
   `prefers-reduced-motion` gets instant swaps.
+- EXPERIMENTAL glow progress: while playing, the white fill breathes with
+  a soft outward bloom (above/below the line, never into the empty track;
+  the track is deliberately unclipped) plus a halo on the knob. The glow
+  lives on a pseudo-element whose opacity transitions, so it fades in/out
+  on play/pause instead of popping — and a dancing halo (breathing core +
+  two counter-orbiting cover-tinted wisps at different rhythms, mobile
+  sheet only — desktop stays flat and free) breathes behind the album
+  artwork (the art slides in and out of its light on track swipes). One
+  self-contained CSS block — delete it to get the flat bar back.
+  Reduced-motion disables everything. Animations freeze while
+  paused (play-state), so idle costs nothing.
+- Time honesty: the clock paints from an interpolated estimate every
+  animation frame, but throttled webviews/background tabs stall rAF —
+  which used to leave time jumping in multi-second snapshot steps. A 500ms
+  interval now backs the loop up and keeps the readout per-second whenever
+  frames go quiet (it stays silent during a healthy loop).
+- Mobile sheet is true fullscreen (edge-to-edge, safe-area aware); the
+  mini-player stays a floating bar.
 
 Notes on the concept adaptation:
 

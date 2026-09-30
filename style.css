@@ -7,17 +7,19 @@
 
 #spm-root {
   --spm-bg: rgba(17, 18, 20, 0.92);
+  --spm-solid-bg: #111214;
   --spm-card-border: rgba(244, 241, 234, 0.1);
   --spm-cream: #f4f1ea;
   --spm-solid: #f4f1ea;
   --spm-on-solid: #101112;
+  --spm-glow-strong: rgba(244, 241, 234, 0.5);
+  --spm-halo-accent-rgb: 244, 241, 234;
+  --spm-halo-cover-rgb: 148, 120, 255;
   --spm-text: #f4f1ea;
   --spm-muted: rgba(244, 241, 234, 0.55);
   --spm-faint: rgba(244, 241, 234, 0.32);
   --spm-line: rgba(244, 241, 234, 0.14);
   --spm-line-strong: rgba(244, 241, 234, 0.35);
-  --spm-dot-ring: #101112;
-  --spm-green: #1ed760;
   --spm-radius: 28px;
   --spm-shadow: 0 24px 70px rgba(0, 0, 0, 0.6), 0 2px 10px rgba(0, 0, 0, 0.4);
   /* --spm-zoom / --spm-vw / --spm-vh are set from JS (see ui.js
@@ -67,7 +69,7 @@
   box-shadow: var(--spm-shadow);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  animation: spm-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1);
+  animation: spm-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1);
   overscroll-behavior: contain;
   /* None so collapse drags are never stolen mid-gesture (a vertical pan
    * would hand the pointer to the page scroll and freeze the drag). All
@@ -75,6 +77,10 @@
    * custom bar for the same reason. Wheel scrolling still works. */
   touch-action: none;
   transition: transform 0.14s ease, opacity 0.14s ease;
+  /* No text selection anywhere on the card: drags (collapse, seek, art
+   * swipe) must move the UI, never highlight titles and times. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #spm-root .spm-card::-webkit-scrollbar {
@@ -82,9 +88,12 @@
 }
 
 @keyframes spm-in {
+  /* Starts halfway faded on purpose: the outgoing mini unmounts mid-fade,
+   * so entering from 0 would dip through full transparency (background
+   * flash). The slide + remaining fade still read as an entrance. */
   from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.98);
+    opacity: 0.45;
+    transform: translateY(10px) scale(0.99);
   }
   to {
     opacity: 1;
@@ -145,7 +154,6 @@
 #spm-root .spm-circle.spm-liked {
   color: var(--spm-cream);
   border-color: rgba(244, 241, 234, 0.45);
-  background: var(--spm-hover);
 }
 
 /* ---------- Header ---------- */
@@ -180,15 +188,14 @@
 }
 
 #spm-root .spm-context-link {
+  padding: 0;
   color: inherit;
-  text-decoration: none;
-}
-
-#spm-root .spm-context-link[href] {
+  font: inherit;
+  letter-spacing: inherit;
   cursor: pointer;
 }
 
-#spm-root .spm-context-link[href]:hover {
+#spm-root .spm-context-link:hover {
   color: var(--spm-text);
   text-decoration: underline;
 }
@@ -211,9 +218,9 @@
   background: linear-gradient(145deg, #232326, #141415);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   /* Swipe flights glide; finger-follow disables the transition (see
-   * .spm-dragging) so the art tracks 1:1 with zero lag. */
+   * .spm-dragging) so the art tracks 1:1 with zero lag. (No touch-action
+   * needed here: the card pins it to none, which wins the intersection.) */
   transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.25, 1), opacity 0.18s ease;
-  touch-action: pan-y;
   cursor: grab;
 }
 
@@ -267,7 +274,8 @@
   width: 100%;
   border-radius: 99px;
   background: var(--spm-line);
-  overflow: hidden;
+  /* The fill's own rounding keeps its ends clean at every ratio. */
+  overflow: visible;
 }
 
 #spm-root .spm-fill {
@@ -277,34 +285,6 @@
   background: var(--spm-solid);
   transform-origin: left center;
   transform: scaleX(0);
-}
-
-#spm-root .spm-knob {
-  position: absolute;
-  top: 50%;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--spm-solid);
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
-  transform: translate(-50%, -50%) scale(0.6);
-  opacity: 0;
-  transition: opacity 0.18s, transform 0.18s;
-  pointer-events: none;
-}
-
-#spm-root .spm-bar:hover .spm-knob,
-#spm-root .spm-bar:active .spm-knob,
-#spm-root .spm-bar:focus-visible .spm-knob {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-@media (hover: none) {
-  #spm-root .spm-knob {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(0.85);
-  }
 }
 
 #spm-root .spm-timerow {
@@ -357,6 +337,30 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#spm-root .spm-artist-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+#spm-root .spm-artist-link:hover {
+  color: var(--spm-text);
+  text-decoration: underline;
+}
+
+#spm-root .spm-artist-link:disabled {
+  cursor: default;
+  text-decoration: none;
 }
 
 /* ---------- Main controls (concept order) ---------- */
@@ -427,6 +431,150 @@
   transition: transform 0.12s, box-shadow 0.2s;
 }
 
+/* Dancing glow behind the artwork: a breathing core plus three wisps
+ * circling around each other at different speeds and directions, so the
+ * composite never visibly loops. Each wisp is an OFF-CENTER gradient
+ * clipped to an organic blob shape — that asymmetry is what makes the
+ * rotation read as orbiting/tumbling rather than spinning in place — and
+ * each also swells as it travels. The first wisp carries the cover's
+ * primary hue; the second wisp carries the cover's runner-up hue, falling
+ * back to cream when the cover has no usable second color. The breathing
+ * core stays neutral. All layers animate CONSTANTLY; playback only fades the
+ * wrapper's opacity (same contract as the progress glow), so pause fades
+ * out symmetrically with play's fade in. Lives behind the art (earlier in
+ * DOM order); the art slides in and out of its light on track swipes.
+ * Visible only on the mobile sheet while playing AND an artwork URL is
+ * present (.spm-has-art, toggled synchronously in render) — desktop stays
+ * flat, and no artwork during app load means no halo, so it can never
+ * flash under the unloaded fallback. */
+#spm-root .spm-halos {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 130%;
+  height: 130%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* Paint containment: the animated layers inside can never dirty
+   * ancestors, so each frame only recomposites this box. */
+  contain: paint;
+  background: radial-gradient(circle, var(--spm-glow-strong) 0%, transparent 65%);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  animation: spm-halo-core 2.6s ease-in-out infinite;
+}
+
+#spm-root .spm-halos::before,
+#spm-root .spm-halos::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+#spm-root .spm-halos::before {
+  opacity: 0.9;
+  /* Elliptical, off-center gradient inside an asymmetric (static) clip:
+   * rotating THAT tumbles visibly — same dance, but everything animatable
+   * here (transform + translate) is compositor-only, so these layers never
+   * repaint per frame the way border-radius morphs did. */
+  border-radius: 58% 42% 55% 45% / 52% 56% 44% 48%;
+  background: radial-gradient(58% 42% at 38% 34%, rgba(var(--spm-halo-cover-rgb), 0.5) 0%, transparent 70%);
+  animation: spm-wisp-a 7s linear infinite, spm-wisp-drift-a 11s ease-in-out infinite alternate;
+}
+
+#spm-root .spm-halos::after {
+  opacity: 0.85;
+  border-radius: 46% 54% 60% 40% / 56% 44% 58% 42%;
+  background: radial-gradient(62% 48% at 62% 66%, rgba(var(--spm-halo-accent-rgb), 0.38) 0%, transparent 70%);
+  animation: spm-wisp-b 10s linear infinite, spm-wisp-drift-b 13s ease-in-out infinite alternate;
+}
+
+/* Sheet-only glow: the desktop corner card stays flat (zero animation
+ * cost there) while the mobile fullscreen keeps the full dance. Delete
+ * ".spm-sheet" from the two gates below to restore it on desktop. */
+#spm-root.spm-sheet.spm-playing.spm-has-art .spm-halos {
+  opacity: 1;
+}
+
+/* Battery + heat: the glow only animates while it is visible (playing +
+ * artwork). Otherwise every layer freezes in place — play-state preserves
+ * the current keyframe pose, so resume continues seamlessly with no jump
+ * and the opacity fade contract is untouched. */
+#spm-root .spm-halos,
+#spm-root .spm-halos::before,
+#spm-root .spm-halos::after {
+  animation-play-state: paused;
+}
+
+#spm-root.spm-sheet.spm-playing.spm-has-art .spm-halos,
+#spm-root.spm-sheet.spm-playing.spm-has-art .spm-halos::before,
+#spm-root.spm-sheet.spm-playing.spm-has-art .spm-halos::after {
+  animation-play-state: running;
+}
+
+@keyframes spm-halo-core {
+  /* NOTE: transform-only on purpose. A brightness pulse here repainted
+   * this whole layer every frame on phone GPUs; the scale breath plus the
+   * dancing wisps read identically without it. */
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+}
+
+/* Full-turn tumbles: an off-center ELLIPSE inside an asymmetric clip —
+ * rotating that reads as orbiting/tumbling/wobbling at once, while each
+ * wisp also swells mid-turn. 0%/100% match so the loop is seamless; the
+ * two wisps run opposite directions at 7s vs 10s (plus 11s/13s drifts on
+ * the separate `translate` property, which composes with `transform`), so
+ * the composite never visibly repeats. Deliberately no border-radius or
+ * filter in these keyframes: those repaint every frame, while transform
+ * and translate composite for free. */
+@keyframes spm-wisp-a {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.14);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes spm-wisp-b {
+  0% {
+    transform: rotate(0deg) scale(1.06);
+  }
+  50% {
+    transform: rotate(-180deg) scale(0.94);
+  }
+  100% {
+    transform: rotate(-360deg) scale(1.06);
+  }
+}
+
+@keyframes spm-wisp-drift-a {
+  from {
+    translate: -4% -3%;
+  }
+  to {
+    translate: 4% 3%;
+  }
+}
+
+@keyframes spm-wisp-drift-b {
+  from {
+    translate: 5% -4%;
+  }
+  to {
+    translate: -5% 4%;
+  }
+}
+
 #spm-root .spm-play:hover {
   box-shadow: 0 14px 34px rgba(244, 241, 234, 0.16), 0 12px 30px rgba(0, 0, 0, 0.5);
 }
@@ -477,7 +625,6 @@
 
 #spm-root .spm-expand:hover {
   color: var(--spm-cream);
-  background: var(--spm-hover);
 }
 
 #spm-root .spm-expand:active {
@@ -516,7 +663,6 @@
 
 #spm-root .spm-ghost:hover {
   color: var(--spm-cream);
-  background: var(--spm-hover);
 }
 
 #spm-root .spm-vol {
@@ -641,12 +787,12 @@
   width: min(560px, calc(var(--spm-vw) - 24px));
   margin-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   padding: 8px 8px 8px 10px;
-  background: var(--spm-bg);
+  /* Solid, no blur: the mini is on screen most of the time on phones, so
+   * it pays for itself in GPU every frame it is visible. */
+  background: var(--spm-solid-bg);
   border: 1px solid var(--spm-card-border);
   border-radius: 18px;
   box-shadow: var(--spm-shadow);
-  backdrop-filter: blur(24px) saturate(1.2);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
   pointer-events: auto;
   cursor: pointer;
   touch-action: none;
@@ -657,13 +803,15 @@
 
 #spm-root.spm-collapsed .spm-miniplayer {
   display: flex;
-  animation: spm-mini-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1);
+  animation: spm-mini-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
 
 @keyframes spm-mini-in {
+  /* Same halfway-faded entry as the card (see spm-in): the outgoing card
+   * unmounts mid-fade, so this must never start at zero. */
   from {
-    opacity: 0;
-    transform: translateY(14px);
+    opacity: 0.5;
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -803,24 +951,32 @@
  * (pointer-events pass straight through to the mini body). */
 #spm-root .spm-mini-progress {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
+  /* Bleed 1px under the card border on every side so the hairline wraps
+   * flush with the mini's edge — no hairline gap above it. The strip is
+   * taller than the visible 3px line to give touch fingers a real target;
+   * the fill itself stays pinned to the top. */
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  height: 13px;
   border-radius: 18px 18px 0 0;
   overflow: hidden;
-  pointer-events: none;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+
+#spm-root .spm-mini-progress:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 #spm-root .spm-mini-progress-fill {
   width: 100%;
-  height: 100%;
+  height: 3px;
   transform-origin: left center;
   transform: scaleX(0);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0) 60%),
-    var(--spm-solid);
-  box-shadow: 0 0 10px rgba(244, 241, 234, 0.5);
+  background: var(--spm-solid);
 }
 
 /* ---------- Narrow screens: bottom-sheet ----------
@@ -833,28 +989,77 @@
  * applied those render as the full physical screen. */
 
 #spm-root.spm-sheet {
+  top: 0;
   right: 0;
   bottom: 0;
   left: 0;
   display: flex;
   justify-content: center;
+  /* Bottom-anchored: the mini sits at the bottom when collapsed, and the
+   * full card grows upward from the bottom edge when expanded. */
+  align-items: flex-end;
   pointer-events: none;
+  /* Deliberately NO backdrop-filter anywhere in sheet mode: a full-screen
+   * blur re-composites every frame on phone GPUs (the responsiveness
+   * killer), and behind a solid panel there is nothing to frost anyway. */
 }
 
-#spm-root.spm-sheet .spm-card {
+/* NOTE: :not(.spm-collapsed) is load-bearing, not decorative. This rule
+ * sets display:flex with equal specificity to (but later in the file
+ * than) the .spm-collapsed display:none rule — without the guard it
+ * would override the hide and leave card + mini fighting side by side
+ * (card squeezed tiny, mini stretched full height). */
+#spm-root.spm-sheet:not(.spm-collapsed) .spm-card {
   pointer-events: auto;
   width: var(--spm-vw);
   max-width: 100%;
-  max-height: calc(var(--spm-vh) - 12px);
-  border-radius: 28px 28px 0 0;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
+  /* Clamped to the visible root: a vh reading that overshoots reality can
+   * never again push the header off the top of the screen. */
+  height: min(var(--spm-vh), 100%);
+  max-height: 100%;
+  border-radius: 0;
+  border: none;
+  background: var(--spm-solid-bg);
+  /* No backdrop-filter here either (see above); overflow-x uses hidden
+   * rather than clip to keep the exotic keyword out of the suspect
+   * context. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow-x: hidden;
+  padding-top: calc(18px + env(safe-area-inset-top, 0px));
   padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  /* Fit-layout: column flex where the artwork stage absorbs ALL leftover
+   * space, so the fullscreen sheet always shows everything — header on
+   * top, controls reachable at the bottom, nothing cut, no touch scroll
+   * needed (touch scrolling stays off for the collapse gesture). */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Every direct child except the stage keeps its natural size. */
+#spm-root.spm-sheet .spm-card > :not(.spm-stage) {
+  flex: none;
 }
 
 #spm-root.spm-sheet .spm-stage {
-  width: min(100%, 300px);
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  aspect-ratio: auto;
+  margin: 10px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Height-driven artwork: fills the flexible stage, stays square, never
+ * wider than the card, capped so tall screens keep air around it. */
+#spm-root.spm-sheet .spm-blob {
+  height: 100%;
+  max-height: 300px;
+  width: auto;
+  aspect-ratio: 1 / 1;
+  max-width: 100%;
 }
 
 /* Collapsed shows the full-width mini-player in every viewport, so the
@@ -895,8 +1100,13 @@
   #spm-root .spm-blob,
   #spm-root .spm-circle,
   #spm-root .spm-play,
+  #spm-root .spm-halos,
+  #spm-root .spm-halos::before,
+  #spm-root .spm-halos::after,
   #spm-root .spm-mini,
-  #spm-root .spm-miniplayer {
+  #spm-root .spm-miniplayer,
+  #spm-root .spm-fill,
+  #spm-root .spm-mini-progress-fill {
     animation: none;
     transition: none;
   }
@@ -909,15 +1119,18 @@
 @media (prefers-color-scheme: light) {
   #spm-root {
     --spm-bg: rgba(244, 241, 234, 0.94);
+    --spm-solid-bg: #f4f1ea;
     --spm-card-border: rgba(20, 20, 18, 0.12);
     --spm-solid: #171715;
     --spm-on-solid: #f4f1ea;
+    --spm-glow-strong: rgba(30, 25, 15, 0.32);
+    --spm-halo-accent-rgb: 70, 60, 45;
+    --spm-halo-cover-rgb: 110, 80, 200;
     --spm-text: #171715;
     --spm-muted: rgba(23, 23, 21, 0.6);
     --spm-faint: rgba(23, 23, 21, 0.38);
     --spm-line: rgba(23, 23, 21, 0.16);
     --spm-line-strong: rgba(23, 23, 21, 0.4);
-    --spm-dot-ring: #f4f1ea;
     --spm-shadow: 0 24px 70px rgba(30, 25, 15, 0.28), 0 2px 10px rgba(30, 25, 15, 0.18);
   }
 

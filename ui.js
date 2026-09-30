@@ -74,19 +74,19 @@
       SVG.heart +
       "</button>" +
       "</header>" +
-      '<div class="spm-context" role="note" hidden>From <a class="spm-context-link"></a></div>' +
+      '<div class="spm-context" role="note" hidden><button class="spm-context-link" type="button"></button></div>' +
       '<div class="spm-stage">' +
+      '<div class="spm-halos" aria-hidden="true"></div>' +
       '<div class="spm-blob">' +
       '<img class="spm-art" alt="Album artwork" draggable="false" />' +
       '<div class="spm-art-fallback" aria-hidden="true">' + SVG.note + "</div>" +
       "</div>" +
       "</div>" +
       '<div class="spm-titles"><h2 class="spm-title">Nothing playing</h2>' +
-      '<p class="spm-artist">Open Spotify and press play</p></div>' +
+      '<p class="spm-artist"><button class="spm-artist-link" type="button" disabled>Open Spotify and press play</button></p></div>' +
       '<div class="spm-progress">' +
       '<div class="spm-bar" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
       '<div class="spm-track"><div class="spm-fill"></div></div>' +
-      '<div class="spm-knob"></div>' +
       "</div>" +
       '<div class="spm-timerow"><span class="spm-cur">0:00</span><span class="spm-dur">0:00</span></div>' +
       "</div>" +
@@ -115,7 +115,7 @@
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
       '<div class="spm-miniplayer" role="region" aria-label="Mini player">' +
-      '<div class="spm-mini-progress" aria-hidden="true"><div class="spm-mini-progress-fill"></div></div>' +
+      '<div class="spm-mini-progress" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="spm-mini-progress-fill"></div></div>' +
       '<div class="spm-mini-artwrap"><img class="spm-mini-art" alt="" draggable="false" />' +
       '<div class="spm-mini-fallback" aria-hidden="true">' + SVG.note + "</div></div>" +
       '<div class="spm-mini-titles"><div class="spm-mini-title">Nothing playing</div>' +
@@ -143,10 +143,12 @@
     var miniPlay = q(".spm-mini-play");
     var miniNext = q(".spm-mini-next");
     var miniProgressFill = q(".spm-mini-progress-fill");
+    var miniProgress = q(".spm-mini-progress");
     var art = q(".spm-art");
     var artFallback = q(".spm-art-fallback");
     var titleEl = q(".spm-title");
     var artistEl = q(".spm-artist");
+    var artistBtn = q(".spm-artist-link");
     var likeBtn = q(".spm-like");
     var playBtn = q(".spm-play");
     var prevBtn = q(".spm-prev");
@@ -155,7 +157,6 @@
     var repeatBtn = q(".spm-repeat");
     var bar = q(".spm-bar");
     var fill = q(".spm-fill");
-    var knob = q(".spm-knob");
     var blob = q(".spm-blob");
 
     var curEl = q(".spm-cur");
@@ -180,7 +181,6 @@
     var currentArtwork = "";
     var envInfo = null;
     var transitionTimer = 0;
-    var cardDrag = null;
     var miniDrag = null;
     var miniSuppressClick = false;
 
@@ -201,12 +201,24 @@
         return;
       }
       if (!info) return;
+      // Never let a garbage reading (NaN / zero / absurd zoom from a
+      // spoofed viewport) blank or blow up the layout: only finite, sane
+      // numbers reach CSS, otherwise the stylesheet defaults stand. The
+      // sheet flag itself still applies from whatever we got.
+      var zoom = Number(info.zoom);
+      var vw = Math.round(Number(info.sheetWidth));
+      var vh = Math.round(Number(info.sheetHeight));
+      var sane =
+        isFinite(zoom) && zoom > 0 && zoom <= 8 &&
+        isFinite(vw) && vw > 0 && isFinite(vh) && vh > 0;
       envInfo = info;
-      try {
-        root.style.setProperty("--spm-zoom", String(info.zoom));
-        root.style.setProperty("--spm-vw", Math.round(info.sheetWidth) + "px");
-        root.style.setProperty("--spm-vh", Math.round(info.sheetHeight) + "px");
-      } catch (e) {}
+      if (sane) {
+        try {
+          root.style.setProperty("--spm-zoom", String(zoom));
+          root.style.setProperty("--spm-vw", vw + "px");
+          root.style.setProperty("--spm-vh", vh + "px");
+        } catch (e) {}
+      }
       root.classList.toggle("spm-sheet", !!info.sheet);
     }
 
@@ -260,14 +272,17 @@
         setCollapsed(false);
         return;
       }
-      // Mini sinks away, then the full card rises — shared artwork in both
-      // makes the handoff read as one continuous surface.
+      // Mini sinks away as the full card rises — shared artwork in both
+      // makes the handoff read as one continuous surface. The flip lands
+      // mid-sink (~60ms) so the entering card overlaps the leaving mini:
+      // sequential staging left a dead window with neither visible, which
+      // flashed the background.
       mini.classList.add("spm-leaving");
       transitionTimer = window.setTimeout(function () {
         transitionTimer = 0;
         mini.classList.remove("spm-leaving");
         setCollapsed(false);
-      }, 110);
+      }, 60);
     }
 
     function collapseAnimated() {
@@ -277,12 +292,14 @@
         setCollapsed(true);
         return;
       }
+      // Card starts sinking; the flip lands mid-sink (~60ms) so the
+      // blooming mini overlaps it — same dead-window fix as expand.
       cardEl.classList.add("spm-leaving-card");
       transitionTimer = window.setTimeout(function () {
         transitionTimer = 0;
         cardEl.classList.remove("spm-leaving-card");
         setCollapsed(true);
-      }, 150);
+      }, 60);
     }
 
     // Drag-release path: the card is already mid-flight under the finger,
@@ -304,7 +321,7 @@
         cardEl.style.transform = "";
         cardEl.style.opacity = "";
         setCollapsed(true);
-      }, 150);
+      }, 120);
     }
 
     function applyStoredState() {
@@ -330,9 +347,28 @@
       }, 140);
     }
 
+    // Optimistic play/pause flip: paint the opposite icon the moment the
+    // finger lands instead of waiting for the Spotify-DOM round trip
+    // (click -> React -> mutation -> snapshot -> render), which is what
+    // feels laggy on phone CPUs. The next snapshot reconciles via render's
+    // churn guard, so a failed click self-corrects within a beat.
+    // Double-taps keep parity (two flips), so they stay correct too.
+    function optimisticPlayFlip() {
+      var showingPause = playBtn.getAttribute("data-state") === "pause";
+      var next = !showingPause;
+      playBtn.innerHTML = next ? SVG.pause : SVG.play;
+      playBtn.setAttribute("data-state", next ? "pause" : "play");
+      playBtn.setAttribute("aria-label", next ? "Pause" : "Play");
+      miniPlay.innerHTML = next ? SVG.pause : SVG.play;
+      miniPlay.setAttribute("data-state", next ? "pause" : "play");
+      miniPlay.setAttribute("aria-label", next ? "Pause" : "Play");
+      root.classList.toggle("spm-playing", next);
+    }
+
     // --- transport wiring (adapter only) ---
     playBtn.addEventListener("click", function () {
       pressFeedback(playBtn);
+      optimisticPlayFlip();
       spotify.togglePlay();
     });
     prevBtn.addEventListener("click", function () {
@@ -359,10 +395,41 @@
       if (spotify.openLyrics() === false) setStatus("Lyrics is not available right now.");
     });
     contextLink.addEventListener("click", function () {
-      // Let Spotify navigate to the playlist (no preventDefault); on mobile
-      // get out of the way so the destination is actually visible.
+      // Open it the Spotify way: the adapter clicks Spotify's OWN context
+      // link (inside its React tree), so its router handles it as in-app
+      // navigation. Clicking a copy of the URL from our overlay bypasses
+      // the router and forces a full page load instead.
+      var ok = false;
       try {
-        if (envInfo && envInfo.sheet && !collapsed) setCollapsed(true);
+        ok = spotify.openContext() !== false;
+      } catch (e) {
+        ok = false;
+      }
+      if (!ok) {
+        setStatus("Playlist is not available right now.");
+        return;
+      }
+      // Minimize so the destination is visible.
+      try {
+        if (!collapsed) setCollapsed(true);
+      } catch (e) {}
+    });
+    artistBtn.addEventListener("click", function () {
+      // Same mechanism as the context link: click Spotify's own artist
+      // link so navigation stays in-app.
+      var ok = false;
+      try {
+        ok = spotify.openArtist() !== false;
+      } catch (e) {
+        ok = false;
+      }
+      if (!ok) {
+        setStatus("Artist page is not available right now.");
+        return;
+      }
+      // Minimize so the destination is visible.
+      try {
+        if (!collapsed) setCollapsed(true);
       } catch (e) {}
     });
     queueBtn.addEventListener("click", function () {
@@ -382,6 +449,7 @@
     miniPlay.addEventListener("click", function (e) {
       if (e && e.stopPropagation) e.stopPropagation();
       pressFeedback(miniPlay);
+      optimisticPlayFlip();
       spotify.togglePlay();
     });
     miniLike.addEventListener("click", function (e) {
@@ -401,7 +469,7 @@
     });
     mini.addEventListener("click", function (e) {
       var t = e && e.target;
-      if (t && t.closest && t.closest("button")) return; // buttons act alone
+      if (t && t.closest && (t.closest("button") || t.closest(".spm-mini-progress"))) return; // buttons + hairline act alone
       if (miniSuppressClick) {
         miniSuppressClick = false; // a swipe release may still fire click
         return;
@@ -526,8 +594,7 @@
     function renderBar(current, duration) {
       var ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
       if (fill) fill.style.transform = "scaleX(" + ratio + ")";
-      if (knob) knob.style.left = ratio * 100 + "%";
-      // Mini top hairline mirrors the same ratio (decorative twin).
+      // Mini top hairline mirrors the same ratio (and is itself a slider).
       if (miniProgressFill) {
         miniProgressFill.style.transform = "scaleX(" + ratio + ")";
       }
@@ -539,6 +606,12 @@
         bar.setAttribute("aria-valuemax", String(Math.round(duration)));
         bar.setAttribute("aria-valuenow", String(sec));
         bar.setAttribute(
+          "aria-valuetext",
+          formatTime(current) + " of " + formatTime(duration)
+        );
+        miniProgress.setAttribute("aria-valuemax", String(Math.round(duration)));
+        miniProgress.setAttribute("aria-valuenow", String(sec));
+        miniProgress.setAttribute(
           "aria-valuetext",
           formatTime(current) + " of " + formatTime(duration)
         );
@@ -607,12 +680,78 @@
       }
     });
 
-    // --- art swipe: drag the artwork sideways for previous / next track ---
-    // Lives on the artwork, so it never fights the progress-bar seek area.
+    // --- mini hairline seek: the top strip is a real slider too ---
+    var miniSeeking = false;
+    var miniSeekPreview = 0;
+
+    function miniRatioFromEvent(e) {
+      var r = miniProgress.getBoundingClientRect();
+      var x = e.clientX !== undefined ? e.clientX : r.left;
+      return Math.max(0, Math.min(1, (x - r.left) / Math.max(1, r.width)));
+    }
+
+    miniProgress.addEventListener("pointerdown", function (e) {
+      miniSeeking = true;
+      try {
+        miniProgress.setPointerCapture && miniProgress.setPointerCapture(e.pointerId);
+      } catch (err) {}
+      var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
+      miniSeekPreview = miniRatioFromEvent(e) * dur;
+      renderBar(miniSeekPreview, dur);
+      if (curEl) curEl.textContent = formatTime(miniSeekPreview);
+      e.preventDefault();
+    });
+
+    miniProgress.addEventListener("pointermove", function (e) {
+      if (!miniSeeking) return;
+      var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
+      miniSeekPreview = miniRatioFromEvent(e) * dur;
+      renderBar(miniSeekPreview, dur);
+      if (curEl) curEl.textContent = formatTime(miniSeekPreview);
+    });
+
+    function miniEndSeek(e) {
+      if (!miniSeeking) return;
+      miniSeeking = false;
+      var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
+      var target = e && e.clientX !== undefined ? miniRatioFromEvent(e) * dur : miniSeekPreview;
+      if (dur > 0) {
+        spotify.seek(target);
+        renderBar(target, dur);
+        if (curEl) curEl.textContent = formatTime(target);
+      }
+    }
+
+    miniProgress.addEventListener("pointerup", miniEndSeek);
+    miniProgress.addEventListener("pointercancel", function () {
+      miniSeeking = false;
+    });
+
+    miniProgress.addEventListener("keydown", function (e) {
+      var dur = (lastSnap && lastSnap.duration) || spotify.getDuration() || 0;
+      var cur = (lastSnap && lastSnap.currentTime) || spotify.getCurrentTime() || 0;
+      if (e.key === "ArrowRight") {
+        spotify.seek(Math.min(dur, cur + 5));
+        e.preventDefault();
+      } else if (e.key === "ArrowLeft") {
+        spotify.seek(Math.max(0, cur - 5));
+        e.preventDefault();
+      } else if (e.key === "Home") {
+        spotify.seek(0);
+        e.preventDefault();
+      } else if (e.key === "End") {
+        spotify.seek(dur);
+        e.preventDefault();
+      }
+    });
+
+    // --- art swipe helpers: drag the artwork sideways for prev / next ---
+    // The artwork swipe OWNS no pointers itself (deliberately: a second
+    // capture here once stole pointerup and glued the art to the cursor).
+    // cardEl below is the single gesture owner; it calls these helpers.
     // The art follows the finger live; past the threshold it flies out and
     // the newly arriving cover flies in from the other side. A tap (no
     // real movement) does nothing at all.
-    var swipe = null; // { id, x0, y0, dx, t0, active }
     var awaitingArt = null; // { dir, timer } while the new cover travels in
 
     function blobWidth() {
@@ -633,74 +772,13 @@
       blob.style.opacity = "";
     }
 
-    blob.addEventListener("pointerdown", function (e) {
-      if (awaitingArt) return; // a fly animation is already in flight
-      if (e.pointerType === "mouse" && e.button !== 0) return;
-      try {
-        e.preventDefault(); // no native image-drag, no text selection
-      } catch (err2) {}
-      swipe = {
-        id: e.pointerId,
-        x0: e.clientX,
-        y0: e.clientY,
-        dx: 0,
-        t0: nowMs(),
-        active: false,
-      };
-      try {
-        blob.setPointerCapture && blob.setPointerCapture(e.pointerId);
-      } catch (err) {}
-    });
-
-    blob.addEventListener("pointermove", function (e) {
-      if (!swipe || e.pointerId !== swipe.id) return;
-      var dx = e.clientX - swipe.x0;
-      var dy = e.clientY - swipe.y0;
-      if (!swipe.active) {
-        if (Math.abs(dx) < 12) return;
-        // Mostly vertical: not our gesture, let the page scroll.
-        if (Math.abs(dx) < Math.abs(dy) * 1.2) {
-          swipe = null;
-          return;
-        }
-        swipe.active = true;
-        blob.classList.add("spm-dragging"); // follow finger 1:1, no lag
-      }
-      swipe.dx = dx;
-      var w = blobWidth();
-      var clamped = Math.max(-w * 0.6, Math.min(w * 0.6, dx));
-      blobPose(clamped, Math.max(0.25, 1 - Math.abs(clamped) / (w * 1.2)));
-    });
-
-    function swipeEnd(e) {
-      if (!swipe || (e && e.pointerId !== swipe.id)) return;
-      var s = swipe;
-      swipe = null;
-      blob.classList.remove("spm-dragging");
-      if (!s.active) return; // plain tap: art stays exactly as it was
-      var dt = Math.max(1, nowMs() - s.t0);
-      var vel = Math.abs(s.dx) / dt; // px per ms
-      var th = Math.max(48, blobWidth() * 0.28);
-      if (Math.abs(s.dx) > th || (Math.abs(s.dx) > th * 0.45 && vel > 0.5)) {
-        commitSwipe(s.dx < 0 ? -1 : 1);
-      } else {
-        blobRest(); // CSS transition springs it home
-      }
-    }
-
-    blob.addEventListener("pointerup", swipeEnd);
-    blob.addEventListener("pointercancel", function () {
-      swipe = null;
-      blob.classList.remove("spm-dragging");
-      blobRest();
-    });
-
     function commitSwipe(dir) {
       // dir -1 (swiped left) = next track, +1 (swiped right) = previous.
       var w = blobWidth();
       blobPose(dir * w * 1.25, 0);
       if (dir < 0) spotify.next();
       else spotify.previous();
+      watchTrackArrival(); // poll for the new track; observer can lag
       if (awaitingArt && awaitingArt.timer) {
         try {
           window.clearTimeout(awaitingArt.timer);
@@ -729,10 +807,308 @@
       blobRest(); // CSS transition glides it home
     }
 
-    // --- state gestures: card swipe-down collapses, mini swipe-up expands ---
-    // Pointer events throughout; the dragged surface tracks the finger live
-    // (no wait-for-release), with distance + velocity thresholds so flings
-    // commit and accidental nudges snap back.
+    // Fast track-arrival watch: after prev/next the observer path (React
+    // -> DOM mutation -> 150ms debounce -> snapshot) can lag, especially
+    // on throttled mobile webviews — leaving the stage empty while Spotify
+    // has already moved on. Poll the cheap track title directly (250ms,
+    // max 3s to match the glide-home fallback) and render the moment it
+    // flips, which also triggers the fly-in via awaitingArt.
+    function watchTrackArrival() {
+      var tries = 0;
+      try {
+        var timer = window.setInterval(function () {
+          if (!awaitingArt) {
+            window.clearInterval(timer);
+            return;
+          }
+          tries++;
+          var fresh = "";
+          try {
+            fresh = spotify.getCurrentTrack() || "";
+          } catch (e) {}
+          if (fresh && lastSnap && fresh !== lastSnap.track) {
+            window.clearInterval(timer);
+            try {
+              render(spotify.getSnapshot());
+            } catch (e2) {}
+            return;
+          }
+          if (tries >= 12) window.clearInterval(timer);
+        }, 250);
+      } catch (e) {}
+    }
+
+    // --- cover-tinted glow: sample the artwork's dominant vivid color ---
+    // Runs on a SEPARATE, display-independent Image with crossOrigin set,
+    // so sampling can never break the visible cover: if the CDN refuses
+    // CORS (tainted canvas) or the fetch fails, getImageData throws, we
+    // swallow it, and the CSS fallback color stays. One tiny 32px decode
+    // per track change — negligible cost. Stale loads (track changed
+    // mid-fetch) are discarded via the currentArtwork check.
+    var coverSampler = null;
+    var coverCanvas = null;
+    var samplingFor = "";
+
+    // --- cover-color crossfade: blob hues sweep between tracks ---
+    // The sampler below only computes TARGET colors; this loop animates the
+    // CSS vars from whatever is currently displayed (mid-flight values
+    // included — a new track mid-transition retargets smoothly instead of
+    // snapping). eased over 1.4s; instant when reduced-motion is on or rAF
+    // is unavailable. Mirrors start at the CSS fallback defaults.
+    var coverDisplayed = {
+      cover: [148, 120, 255],
+      accent: [244, 241, 234],
+    };
+    var coverAnims = { cover: 0, accent: 0 };
+
+    function transitionCoverVar(name, key, to) {
+      var from = (coverDisplayed[key] || to).slice();
+      if (coverAnims[key]) {
+        try {
+          cancelAnimationFrame(coverAnims[key]);
+        } catch (e) {}
+        coverAnims[key] = 0;
+      }
+      function snap() {
+        coverDisplayed[key] = to.slice();
+        try {
+          root.style.setProperty(name, to.join(", "));
+        } catch (e2) {}
+      }
+      if (from[0] === to[0] && from[1] === to[1] && from[2] === to[2]) {
+        snap();
+        return;
+      }
+      if (prefersReducedMotion()) {
+        snap();
+        return;
+      }
+      var dur = 1400;
+      var t0 = 0;
+      try {
+        t0 = performance.now();
+      } catch (e3) {
+        t0 = Date.now();
+      }
+      function step(now) {
+        var t = Math.max(0, Math.min(1, ((now === undefined ? t0 : now) - t0) / dur));
+        var e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        var cur = [
+          Math.round(from[0] + (to[0] - from[0]) * e),
+          Math.round(from[1] + (to[1] - from[1]) * e),
+          Math.round(from[2] + (to[2] - from[2]) * e),
+        ];
+        coverDisplayed[key] = cur;
+        try {
+          root.style.setProperty(name, cur.join(", "));
+        } catch (e4) {}
+        if (t < 1) {
+          try {
+            coverAnims[key] = requestAnimationFrame(step);
+          } catch (e5) {
+            coverAnims[key] = 0;
+            snap();
+          }
+        } else {
+          coverAnims[key] = 0;
+        }
+      }
+      try {
+        coverAnims[key] = requestAnimationFrame(step);
+      } catch (e6) {
+        coverAnims[key] = 0;
+        snap();
+      }
+    }
+
+    function sampleCoverColor(url) {
+      if (!url || url === samplingFor) return;
+      samplingFor = url;
+      try {
+        if (!coverSampler) {
+          coverSampler = new Image();
+          try {
+            coverSampler.crossOrigin = "anonymous";
+          } catch (e0) {}
+        }
+        if (!coverCanvas) {
+          coverCanvas = document.createElement("canvas");
+        }
+        var target = url;
+        coverSampler.onload = function () {
+          try {
+            if (target !== currentArtwork) return; // stale: moved on already
+            var w = 32;
+            var h = 32;
+            coverCanvas.width = w;
+            coverCanvas.height = h;
+            // willReadFrequently: this canvas exists only to be read back
+            // (one getImageData per track), so keep it in CPU memory and
+            // silence Chrome's multiple-readback performance hint.
+            var ctx = coverCanvas.getContext("2d", { willReadFrequently: true });
+            if (!ctx) return;
+            ctx.clearRect(0, 0, w, h);
+            ctx.drawImage(coverSampler, 0, 0, w, h);
+            var data = ctx.getImageData(0, 0, w, h).data;
+            var r = 0;
+            var g = 0;
+            var b = 0;
+            var n = 0;
+            var vr = 0;
+            var vg = 0;
+            var vb = 0;
+            var vn = 0;
+            var buckets = {};
+            for (var i = 0; i < data.length; i += 4) {
+              var pr = data[i];
+              var pg = data[i + 1];
+              var pb = data[i + 2];
+              var pa = data[i + 3];
+              if (pa < 128) continue;
+              r += pr;
+              g += pg;
+              b += pb;
+              n++;
+              var mx = Math.max(pr, pg, pb);
+              var mn = Math.min(pr, pg, pb);
+              if (mx > 0 && (mx - mn) / mx > 0.25) {
+                vr += pr;
+                vg += pg;
+                vb += pb;
+                vn++;
+                // Coarse 3-bits/channel bucket for the second-color hunt.
+                // Near-blacks never enter: the accent must stay visible in
+                // dark mode.
+                if (mx >= 35) {
+                  var key = (pr >> 5) * 64 + (pg >> 5) * 8 + (pb >> 5);
+                  var bk = buckets[key];
+                  if (!bk) {
+                    bk = buckets[key] = { r: 0, g: 0, b: 0, n: 0 };
+                  }
+                  bk.r += pr;
+                  bk.g += pg;
+                  bk.b += pb;
+                  bk.n++;
+                }
+              }
+            }
+            if (!n) return;
+            // Color 1 = the largest visible bucket: a REAL cover hue, never
+            // a blend. (A global average of a multicolor cover is a muddy
+            // mix of its hues — exactly what we don't want glowing.) Falls
+            // back to the vivid-then-overall average only when nothing
+            // vivid was sampled at all (monochrome covers), with a floor
+            // blending toward cream so the glow is never black-on-black.
+            var c1 = null;
+            var c1n = 0;
+            for (var kk in buckets) {
+              if (!Object.prototype.hasOwnProperty.call(buckets, kk)) continue;
+              if (buckets[kk].n > c1n) {
+                c1n = buckets[kk].n;
+                c1 = buckets[kk];
+              }
+            }
+            if (c1 && c1n >= 4) {
+              r = Math.round(c1.r / c1n);
+              g = Math.round(c1.g / c1n);
+              b = Math.round(c1.b / c1n);
+            } else {
+              // Prefer the vivid bucket when it holds a real share of
+              // pixels (plain averages of artwork skew muddy gray);
+              // otherwise fall back to the overall average.
+              if (vn > n * 0.1) {
+                r = vr;
+                g = vg;
+                b = vb;
+                n = vn;
+              }
+              r = Math.round(r / n);
+              g = Math.round(g / n);
+              b = Math.round(b / n);
+            }
+            // Gentle stretch so dark covers still cast visible light, capped
+            // so nothing blows out to neon.
+            var peak = Math.max(r, g, b);
+            if (peak > 0 && peak < 170) {
+              var f = Math.min(170 / peak, 1.5);
+              r = Math.min(255, Math.round(r * f));
+              g = Math.min(255, Math.round(g * f));
+              b = Math.min(255, Math.round(b * f));
+            }
+            if (Math.max(r, g, b) < 50) {
+              r = Math.round((r + 244) / 2);
+              g = Math.round((g + 241) / 2);
+              b = Math.round((b + 234) / 2);
+            }
+            transitionCoverVar("--spm-halo-cover-rgb", "cover", [r, g, b]);
+            // Second color for the accent wisp: the largest bucket far away
+            // from color 1 (squared distance > 90^2). Anything else —
+            // monochrome cover, nothing vivid, or a runner-up too dark for
+            // dark mode — falls back to cream, which always reads.
+            var accent = null;
+            var best = 0;
+            var bestDist = 0;
+            var minCount = Math.max(6, vn * 0.05);
+            for (var k in buckets) {
+              if (!Object.prototype.hasOwnProperty.call(buckets, k)) continue;
+              var c = buckets[k];
+              if (c.n < minCount) continue;
+              var cr = c.r / c.n;
+              var cg = c.g / c.n;
+              var cb = c.b / c.n;
+              var dr = cr - r;
+              var dg = cg - g;
+              var db = cb - b;
+              var dist = dr * dr + dg * dg + db * db;
+              if (dist < 8100) continue; // too close to color 1
+              if (c.n > best || (c.n === best && dist > bestDist)) {
+                best = c.n;
+                bestDist = dist;
+                accent = [cr, cg, cb];
+              }
+            }
+            var FALLBACK_ACCENT = [244, 241, 234];
+            if (accent) {
+              var ar = Math.round(accent[0]);
+              var ag = Math.round(accent[1]);
+              var ab = Math.round(accent[2]);
+              var apeak = Math.max(ar, ag, ab);
+              if (apeak >= 70) {
+                if (apeak < 170) {
+                  var af = Math.min(170 / apeak, 1.5);
+                  ar = Math.min(255, Math.round(ar * af));
+                  ag = Math.min(255, Math.round(ag * af));
+                  ab = Math.min(255, Math.round(ab * af));
+                }
+                transitionCoverVar("--spm-halo-accent-rgb", "accent", [ar, ag, ab]);
+              } else {
+                transitionCoverVar("--spm-halo-accent-rgb", "accent", FALLBACK_ACCENT);
+              }
+            } else {
+              transitionCoverVar("--spm-halo-accent-rgb", "accent", FALLBACK_ACCENT);
+            }
+          } catch (e) {
+            /* tainted canvas / decode hiccup: keep the fallback color */
+          }
+        };
+        coverSampler.onerror = function () {
+          /* keep the fallback color */
+        };
+        coverSampler.src = target;
+      } catch (e) {}
+    }
+
+    // --- unified card gestures: ONE owner for art swipe + collapse ---
+    // cardEl sees every pointer that starts on the card (the artwork no
+    // longer captures to itself — that second capture is what once stole
+    // pointerup and glued the art to the cursor). First dominant axis
+    // wins, tracked live from 12px so drags feel immediate:
+    //   horizontal starting on art -> track swipe (previous / next),
+    //   vertical, downward          -> collapse to the mini-player,
+    //   anything else               -> ignored (a tap does nothing).
+    // So swipe-down works from ANYWHERE, including the cover.
+    var gesture = null; // { id, x0, y0, dx, dy, t0, mode, fromBlob }
+
     function cardHeight() {
       try {
         return cardEl.getBoundingClientRect().height || 400;
@@ -756,13 +1132,19 @@
       }
     }
 
-    function abortCardDrag() {
-      cardDrag = null;
+    function abortGesture() {
+      if (!gesture) return;
+      gesture = null;
+      blob.classList.remove("spm-dragging");
+      cardEl.classList.remove("spm-card-drag");
+      // Never touch the artwork pose while a fly-out is in flight —
+      // that pose belongs to commitSwipe until the new cover lands.
+      if (!awaitingArt) blobRest();
       glideCardHome();
     }
 
     cardEl.addEventListener("pointerdown", function (e) {
-      if (collapsed || cardDrag) return;
+      if (collapsed || gesture) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       var t = e.target;
       // Controls, links and the seek bar keep their own gestures.
@@ -770,17 +1152,18 @@
         return;
       }
       if (cardEl.scrollTop > 4) return; // scrolled: let it scroll
-      cardDrag = {
+      gesture = {
         id: e.pointerId,
-        y0: e.clientY,
         x0: e.clientX,
+        y0: e.clientY,
+        dx: 0,
         dy: 0,
         t0: nowMs(),
-        locked: false,
-        inBlob: !!(t && t.closest && t.closest(".spm-blob")),
+        mode: null,
+        fromBlob: !!(t && t.closest && t.closest(".spm-blob")),
       };
-      // Mouse has no implicit capture; touch is captured to its target and
-      // bubbles up through here either way.
+      // Single capture, mouse only (touch is implicitly captured to its
+      // target and bubbles up through here either way).
       if (e.pointerType === "mouse") {
         try {
           cardEl.setPointerCapture && cardEl.setPointerCapture(e.pointerId);
@@ -788,60 +1171,105 @@
       }
     });
 
-    cardEl.addEventListener("pointermove", function (e) {
-      if (!cardDrag || e.pointerId !== cardDrag.id) return;
+    function gestureMove(e) {
+      if (!gesture || (e && e.pointerId !== undefined && e.pointerId !== gesture.id)) return;
       if (cardEl.scrollTop > 4) {
-        abortCardDrag();
+        abortGesture();
         return;
       }
-      var dx = e.clientX - cardDrag.x0;
-      var dy = e.clientY - cardDrag.y0;
-      if (!cardDrag.locked) {
-        if (Math.abs(dy) < 12 && Math.abs(dx) < 12) return;
+      var dx = e.clientX - gesture.x0;
+      var dy = e.clientY - gesture.y0;
+      if (!gesture.mode) {
+        if (Math.abs(dx) < 12 && Math.abs(dy) < 12) return;
         if (Math.abs(dx) > Math.abs(dy)) {
-          // Horizontal: the artwork swipe owns drags starting on art.
-          abortCardDrag();
-          return;
+          // Horizontal: only artwork drags become track swipes — anywhere
+          // else the gesture belongs to nobody (a tap still works).
+          if (!gesture.fromBlob || awaitingArt) {
+            gesture = null;
+            return;
+          }
+          gesture.mode = "art";
+          blob.classList.add("spm-dragging"); // follow finger 1:1, no lag
+        } else {
+          if (dy < 0) {
+            gesture = null; // upward on the full card: not a dismiss
+            return;
+          }
+          gesture.mode = "card";
+          cardEl.classList.add("spm-card-drag");
         }
-        if (dy < 0) {
-          abortCardDrag(); // upward on the full card: not a dismiss
-          return;
-        }
-        cardDrag.locked = true;
-        cardEl.classList.add("spm-card-drag");
       }
-      cardDrag.dy = dy;
-      var h = cardHeight();
-      var clamped = Math.max(0, Math.min(h * 1.2, dy));
-      cardEl.style.transform = "translateY(" + Math.round(clamped) + "px)";
-      cardEl.style.opacity = String(Math.max(0.35, 1 - clamped / (h * 1.4 || 1)));
-    });
+      gesture.dx = dx;
+      gesture.dy = dy;
+      if (gesture.mode === "art") {
+        var w = blobWidth();
+        var clamped = Math.max(-w * 0.6, Math.min(w * 0.6, dx));
+        blobPose(clamped, Math.max(0.25, 1 - Math.abs(clamped) / (w * 1.2)));
+      } else {
+        var h = cardHeight();
+        var cy = Math.max(0, Math.min(h * 1.2, dy));
+        cardEl.style.transform = "translateY(" + Math.round(cy) + "px)";
+        cardEl.style.opacity = String(Math.max(0.35, 1 - cy / (h * 1.4 || 1)));
+      }
+    }
 
-    function cardEnd(e) {
-      if (!cardDrag || (e && e.pointerId !== cardDrag.id)) return;
-      var c = cardDrag;
-      cardDrag = null;
-      if (!c.locked) return; // tap / horizontal / upward: leave it all alone
-      var dt = Math.max(1, nowMs() - c.t0);
-      var vel = c.dy / dt; // px per ms, downward positive
-      var h = cardHeight();
+    cardEl.addEventListener("pointermove", gestureMove);
+    // Window fallback: moves/ups that miss the card still resolve the same
+    // gesture, so a lost capture can never glue anything to the cursor.
+    window.addEventListener("pointermove", gestureMove, true);
+
+    function gestureEnd(e) {
+      if (!gesture || (e && e.pointerId !== undefined && e.pointerId !== gesture.id)) return;
+      var g = gesture;
+      gesture = null;
+      blob.classList.remove("spm-dragging");
+      cardEl.classList.remove("spm-card-drag");
+      if (!g.mode) return; // tap: art and card stay exactly as they were
+      if (g.mode === "art") {
+        var dt = Math.max(1, nowMs() - g.t0);
+        var vel = Math.abs(g.dx) / dt; // px per ms
+        var th = Math.max(48, blobWidth() * 0.28);
+        var adx = Math.abs(g.dx);
+        // Touch slop, same as the mini: a quick, short slide on the cover
+        // is a sloppy tap — snap home instead of skipping tracks. Deliberate
+        // drags (slow or long) and mouse flicks are unaffected.
+        if (e && e.pointerType === "touch" && dt < 150 && adx < 110) {
+          blobRest();
+        } else if (adx > th || (adx > th * 0.45 && vel > 0.5)) {
+          commitSwipe(g.dx < 0 ? -1 : 1);
+        } else {
+          blobRest(); // CSS transition springs it home
+        }
+        return;
+      }
+      var cdt = Math.max(1, nowMs() - g.t0);
+      var cvel = g.dy / cdt; // px per ms, downward positive
+      var ch = cardHeight();
       // Willing commit: modest drags count, flings count more. (A tall
       // threshold felt "stuck": normal drags kept snapping back.)
-      if (c.dy > Math.max(64, h * 0.15) || (c.dy > 40 && vel > 0.5)) {
+      if (g.dy > Math.max(56, ch * 0.12) || (g.dy > 32 && cvel > 0.45)) {
         finishDragCollapse();
       } else {
         glideCardHome();
       }
     }
 
-    cardEl.addEventListener("pointerup", cardEnd);
-    cardEl.addEventListener("pointercancel", abortCardDrag);
+    cardEl.addEventListener("pointerup", gestureEnd);
+    window.addEventListener("pointerup", gestureEnd, true);
+    cardEl.addEventListener("pointercancel", abortGesture);
+    window.addEventListener("pointercancel", abortGesture, true);
+    cardEl.addEventListener("lostpointercapture", function (e) {
+      // Capture released without an up: never leave a live gesture behind.
+      // Real releases already cleared it via the window pointerup above,
+      // so this only fires for the orphaned case.
+      if (gesture && e && e.pointerId === gesture.id) abortGesture();
+    });
 
     mini.addEventListener("pointerdown", function (e) {
       if (!collapsed || miniDrag) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       var t = e.target;
-      if (t && t.closest && t.closest("button")) return; // let buttons work
+      if (t && t.closest && (t.closest("button") || t.closest(".spm-mini-progress"))) return; // let buttons + hairline work
       miniDrag = {
         id: e.pointerId,
         y0: e.clientY,
@@ -890,7 +1318,14 @@
       mini.classList.remove("spm-mdrag");
       mini.style.transform = "";
       mini.style.opacity = "";
-      if (!m.locked) return; // plain tap: the click handler expands
+      // Tap: open INSTANTLY on pointerup instead of waiting for the
+      // browser's synthesized click (which touch tap-delay / slop can
+      // delay or swallow — the old "sometimes two taps"). The click
+      // handler stays as a fallback; it early-returns once expanded.
+      if (!m.locked) {
+        expandAnimated();
+        return;
+      }
       var dt = Math.max(1, nowMs() - m.t0);
       if (m.locked === "v") {
         var vel = -m.dy / dt; // upward velocity, px per ms
@@ -900,23 +1335,19 @@
         }
         // Otherwise the cleared transform glides home via CSS transition.
       } else {
-        // Horizontal fling on the mini: previous / next track, with a
-        // small nudge toward the swipe before gliding home on new data.
-        var hvel = Math.abs(m.dx) / dt;
-        if (Math.abs(m.dx) > 56 || (Math.abs(m.dx) > 32 && hvel > 0.5)) {
+        // Horizontal drags intentionally do nothing (swipe-to-skip was
+        // removed: it kept eating taps via accidental commits). Followed
+        // the finger live above; snap back here. Quick, short slides are
+        // sloppy taps — open at once; longer drags swallow their release
+        // click so letting go doesn't unexpectedly open.
+        var hadx = Math.abs(m.dx);
+        if (e && e.pointerType === "touch" && dt < 150 && hadx < 110) {
+          miniSuppressClick = false;
+          expandAnimated();
+        } else {
           miniSuppressClick = true;
-          var dir = m.dx < 0 ? -1 : 1;
-          mini.style.transform = "translateX(" + dir * 44 + "px)";
-          mini.style.opacity = "0.4";
-          if (dir < 0) spotify.next();
-          else spotify.previous();
-          clearTransitionTimer();
-          transitionTimer = window.setTimeout(function () {
-            transitionTimer = 0;
-            mini.style.transform = "";
-            mini.style.opacity = "";
-          }, 130);
         }
+        // Pose was already cleared above; CSS glides it home.
       }
     }
 
@@ -942,18 +1373,23 @@
         titleEl.title = "";
       }
       var artistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify and press play");
-      if (artistEl.textContent !== artistText) artistEl.textContent = artistText;
+      if (artistBtn.textContent !== artistText) artistBtn.textContent = artistText;
+      if (artistBtn.title !== artistText) artistBtn.title = artistText;
+      // Only a real artist name navigates; placeholders stay inert.
+      artistBtn.disabled = !snap.artist;
+      artistBtn.setAttribute(
+        "aria-label",
+        snap.artist ? "Open " + snap.artist + " in Spotify" : "Artist"
+      );
 
-      // Playing-from context ("From Mix hip hop"). Hidden when unknown —
-      // never placeholder text.
+      // Playing-from context (playlist / mix name). Hidden when unknown —
+      // never placeholder text. The button opens it via the adapter.
       var contextText = snap.context || "";
-      var contextHref = snap.contextHref || "";
       if (contextLink.textContent !== contextText) contextLink.textContent = contextText;
-      var haveHref = contextLink.getAttribute("href") || "";
-      if (haveHref !== contextHref) {
-        if (contextHref) contextLink.setAttribute("href", contextHref);
-        else contextLink.removeAttribute("href");
-      }
+      contextLink.setAttribute(
+        "aria-label",
+        contextText ? "Open " + contextText + " in Spotify" : "Now playing context"
+      );
       if (contextText) {
         if (contextEl.hasAttribute("hidden")) contextEl.removeAttribute("hidden");
       } else if (!contextEl.hasAttribute("hidden")) {
@@ -992,12 +1428,14 @@
         currentArtwork = snap.artwork;
         art.src = snap.artwork;
         art.classList.remove("spm-loaded");
+        sampleCoverColor(snap.artwork);
         miniArt.src = snap.artwork;
         miniArt.style.display = "block";
         if (swipeDir) flyIn(swipeDir);
       } else if (!snap.artwork && currentArtwork) {
         currentArtwork = "";
         art.removeAttribute("src");
+        art.classList.remove("spm-loaded");
         miniArt.removeAttribute("src");
         miniArt.style.display = "none";
       } else if (awaitingArt && snap.track && prevSnap && prevSnap.track && snap.track !== prevSnap.track) {
@@ -1035,6 +1473,21 @@
       artFallback.style.display = artVisible ? "none" : "flex";
       miniArt.style.display = artVisible ? "block" : "none";
       miniFallback.style.display = artVisible ? "none" : "flex";
+
+      // Halo gate, set synchronously every render from URL presence (never
+      // from the img load event — a missed event must not be able to hide
+      // the halo forever). No artwork URL (app loading, nothing playing)
+      // means no halo, which is also what kills the load-time flash.
+      root.classList.toggle("spm-has-art", artVisible);
+
+      // Self-heal a missed img load event: if the element already holds
+      // decoded pixels but the class never applied, apply it so neither
+      // the cover nor anything depending on it gets stuck hidden.
+      try {
+        if (artVisible && !art.classList.contains("spm-loaded") && art.complete && art.naturalWidth > 0) {
+          art.classList.add("spm-loaded");
+        }
+      } catch (e) {}
 
       // Play / pause icon (only touch DOM when it flips).
       var wantPlaying = !!snap.isPlaying;
@@ -1136,7 +1589,7 @@
       }
       // (Re)start the smooth progress ticker.
       if (snap.isPlaying && !rafId && snap.playerReady) startTicker();
-      if ((!snap.isPlaying || !snap.playerReady) && !seeking) {
+      if ((!snap.isPlaying || !snap.playerReady) && !seeking && !miniSeeking) {
         renderBar(snap.currentTime || 0, snap.duration || 0);
         if (curEl) curEl.textContent = formatTime(snap.currentTime || 0);
       }
@@ -1146,13 +1599,54 @@
       art.classList.add("spm-loaded");
     });
 
+    art.addEventListener("error", function () {
+      art.classList.remove("spm-loaded");
+    });
+
     // Smooth progress loop: paints the interpolated estimate EVERY frame
     // (style writes only), rebasing against Spotify ~1/sec to kill drift.
-    // Track changes are picked up on the rebase beat.
+    // Track changes are picked up on the rebase beat. A 500ms interval backs
+    // up rAF: throttled webviews and background tabs stall animation frames,
+    // which used to leave the clock jumping in multi-second steps — the
+    // interval keeps it truthful to the second when frames go quiet.
+    var lastPaint = 0;
+    var tickInterval = 0;
+
+    function paintOnce() {
+      if (!lastSnap || !anchorPlaying || seeking || miniSeeking) return false;
+      var est = estimate();
+      renderBar(est, anchorDur);
+      var t = formatTime(est);
+      if (curEl.textContent !== t) curEl.textContent = t;
+      lastPaint = nowMs();
+      return true;
+    }
+
+    function rebaseFromSpotify() {
+      var cur = estimate();
+      var dur = anchorDur;
+      try {
+        cur = spotify.getCurrentTime() || 0;
+        var d2 = spotify.getDuration() || 0;
+        if (d2) dur = d2;
+      } catch (e) {}
+      if (dur && cur > dur) cur = dur;
+      // Same leash as snapshots: Spotify's integer seconds must not
+      // yank the fractional estimate.
+      anchorDur = dur;
+      var drift = cur - estimate();
+      if (Math.abs(drift) > 1.5) {
+        rebase(cur, dur, true);
+      } else {
+        anchorTime += drift * 0.5;
+      }
+    }
+
     function startTicker() {
       if (rafId) return;
+      ensureTickInterval();
       function frame(ts) {
-        if (seeking) {
+        if (seeking || miniSeeking) {
           // Finger down: the drag handlers paint; keep looping for release.
           rafId = requestAnimationFrame(frame);
           return;
@@ -1161,29 +1655,10 @@
           rafId = 0;
           return;
         }
-        var est = estimate();
-        renderBar(est, anchorDur);
-        var t = formatTime(est);
-        if (curEl.textContent !== t) curEl.textContent = t;
+        paintOnce();
         if (ts - lastRebase > 1000) {
           lastRebase = ts;
-          var cur = est;
-          var dur = anchorDur;
-          try {
-            cur = spotify.getCurrentTime() || 0;
-            var d2 = spotify.getDuration() || 0;
-            if (d2) dur = d2;
-          } catch (e) {}
-          if (dur && cur > dur) cur = dur;
-          // Same leash as snapshots: Spotify's integer seconds must not
-          // yank the fractional estimate.
-          anchorDur = dur;
-          var rdrift = cur - estimate();
-          if (Math.abs(rdrift) > 1.5) {
-            rebase(cur, dur, true);
-          } else {
-            anchorTime += rdrift * 0.5;
-          }
+          rebaseFromSpotify();
           var freshTrack = "";
           try {
             freshTrack = spotify.getCurrentTrack() || "";
@@ -1201,6 +1676,25 @@
         rafId = requestAnimationFrame(frame);
       }
       rafId = requestAnimationFrame(frame);
+    }
+
+    function ensureTickInterval() {
+      if (tickInterval) return;
+      try {
+        tickInterval = window.setInterval(function () {
+          // Fires at most after ~700ms of frame silence, so a healthy loop
+          // is never double-painted.
+          if (lastSnap && anchorPlaying && !seeking && !miniSeeking && nowMs() - lastPaint > 700) {
+            if (paintOnce()) {
+              try {
+                rebaseFromSpotify();
+              } catch (e) {}
+            }
+          }
+        }, 500);
+      } catch (e) {
+        tickInterval = 0;
+      }
     }
 
     function stopTicker() {
@@ -1255,6 +1749,12 @@
 
     function unmount() {
       stopTicker();
+      if (tickInterval) {
+        try {
+          window.clearInterval(tickInterval);
+        } catch (e) {}
+        tickInterval = 0;
+      }
       if (unsubscribe) unsubscribe();
       if (root.parentNode) root.parentNode.removeChild(root);
     }

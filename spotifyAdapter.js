@@ -175,6 +175,20 @@
   }
 
   function findPlayer() {
+    // Fast path first: the player root barely moves. If the cached node is
+    // still connected and still hosts the play/pause toggle, skip the whole
+    // discovery chain (testids, footers, button scans) — this runs ~10x per
+    // snapshot, so the saving matters on phone CPUs.
+    try {
+      if (
+        cachedPlayerRoot &&
+        document.contains(cachedPlayerRoot) &&
+        cachedPlayerRoot.querySelector &&
+        cachedPlayerRoot.querySelector('button[data-testid="' + TESTIDS.playpause + '"]')
+      ) {
+        return cachedPlayerRoot;
+      }
+    } catch (e) {}
     // 1. Stable semantic anchor (best).
     var bar = byTestId(TESTIDS.playerBar);
     if (bar && isVisible(bar)) {
@@ -1420,56 +1434,75 @@
 
   // The header context link: a context-kind anchor wrapping a heading.
   // Track/episode links are songs, never context, and are skipped.
-  function findContextLink() {
-    var none = { text: "", href: "", source: "" };
+  // Every context-kind anchor in the side regions, in DOM order. Kept as
+  // live elements so openContext() can click Spotify's own link.
+  function collectContextLinks() {
+    var out = [];
     try {
       var regions = findSideRegions();
-      // Pass 1: heading-bearing links (the header pattern above).
-      for (var p = 0; p < 2; p++) {
-        for (var r = 0; r < regions.length; r++) {
-          var links = [];
+      for (var r = 0; r < regions.length; r++) {
+        var links = [];
+        try {
+          links = regions[r].querySelectorAll(
+            'a[href*="/playlist/"], a[href*="/album/"], a[href*="/artist/"], a[href*="/show/"], a[href*="/collection/"]'
+          );
+        } catch (e) {
+          continue;
+        }
+        for (var i = 0; i < links.length; i++) {
+          var a = links[i];
+          var info = null;
           try {
-            links = regions[r].querySelectorAll(
-              'a[href*="/playlist/"], a[href*="/album/"], a[href*="/artist/"], a[href*="/show/"], a[href*="/collection/"]'
-            );
+            info = contextHrefInfo(a.getAttribute("href"));
           } catch (e) {
             continue;
           }
-          for (var i = 0; i < links.length; i++) {
-            var a = links[i];
-            var info = null;
-            try {
-              info = contextHrefInfo(a.getAttribute("href"));
-            } catch (e) {
-              continue;
-            }
-            if (!info) continue;
-            var txt = "";
-            try {
-              txt = (a.textContent || "").replace(/\s+/g, " ").trim();
-            } catch (e) {
-              continue;
-            }
-            if (txt.length < 2 || txt.length > 70) continue;
-            if (p === 0) {
-              var head = null;
-              try {
-                head = a.querySelector("h1, h2, h3");
-              } catch (e) {
-                head = null;
-              }
-              if (!head) continue;
-              try {
-                var ht = (head.textContent || "").replace(/\s+/g, " ").trim();
-                if (ht.length >= 2 && ht.length <= 70) txt = ht;
-              } catch (e) {}
-            }
-            return { text: txt, href: info.href, source: "npv-link" };
+          if (!info) continue;
+          var txt = "";
+          try {
+            txt = (a.textContent || "").replace(/\s+/g, " ").trim();
+          } catch (e) {
+            continue;
           }
+          if (txt.length < 2 || txt.length > 70) continue;
+          var headed = false;
+          try {
+            var head = a.querySelector("h1, h2, h3");
+            if (head) {
+              headed = true;
+              var ht = (head.textContent || "").replace(/\s+/g, " ").trim();
+              if (ht.length >= 2 && ht.length <= 70) txt = ht;
+            }
+          } catch (e) {}
+          out.push({ el: a, text: txt, href: info.href, headed: headed });
         }
       }
     } catch (e) {}
-    return none;
+    return out;
+  }
+
+  // Heading-bearing links first (the header pattern), then any other
+  // context-kind link in the side regions.
+  function pickContextLink() {
+    try {
+      var links = collectContextLinks();
+      for (var pass = 0; pass < 2; pass++) {
+        for (var i = 0; i < links.length; i++) {
+          if (pass === 0 && !links[i].headed) continue;
+          return links[i];
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function findContextLink() {
+    var pick = null;
+    try {
+      pick = pickContextLink();
+    } catch (e) {}
+    if (!pick) return { text: "", href: "", source: "" };
+    return { text: pick.text, href: pick.href, source: "npv-link" };
   }
 
   function getPlaybackContext() {
@@ -1638,9 +1671,13 @@
     var sheetW = visualW || innerW || screenW || layoutW;
     var sheetH = visualH || innerH || screenH || layoutH;
     // Sheet mode follows the GLASS when we are compensating (the visual
-    // viewport may report the wide layout width in overview mode), else
-    // the visible width (covers desktop narrow windows + pinch-zoom).
-    var sheetBasis = zoomActive && screenW > 0 ? Math.min(sheetW, screenW) : sheetW;
+    // viewport may report the wide layout width/height in overview mode),
+    // else the visible size (covers desktop narrow windows + pinch-zoom).
+    // NOTE: the clamped basis must feed BOTH the flag and the dimensions —
+    // returning the raw visual size here once produced 980px-wide sheet
+    // cards on phones (blank cutout of an oversized card).
+    var sheetBasisW = zoomActive && screenW > 0 ? Math.min(sheetW, screenW) : sheetW;
+    var sheetBasisH = zoomActive && screenH > 0 ? Math.min(sheetH, screenH) : sheetH;
     var reason = "none (layout ~= visible)";
     if (zoomActive) {
       reason =
@@ -1669,9 +1706,9 @@
       estimatorScreen: round2(est2),
       zoom: round2(zoom),
       zoomActive: zoomActive,
-      sheet: sheetBasis > 0 && sheetBasis < 640,
-      sheetWidth: Math.round(sheetW),
-      sheetHeight: Math.round(sheetH),
+      sheet: sheetBasisW > 0 && sheetBasisW < 640,
+      sheetWidth: Math.round(sheetBasisW),
+      sheetHeight: Math.round(sheetBasisH),
       reason: reason,
     };
   }
@@ -1766,9 +1803,14 @@
     }
     // Light fallback: re-check at most every 2s, only does work when the
     // player is missing or tracks change. Backs off to 5s once stable.
+    // Skipped while the tab is hidden (nothing can be seen anyway).
     var stableTicks = 0;
     function tick() {
       try {
+        if (typeof document.hidden === "boolean" && document.hidden) {
+          fallbackTimer = setTimeout(tick, 5000);
+          return;
+        }
         var root = findPlayer();
         if (!root) {
           stableTicks = 0;
@@ -1876,6 +1918,37 @@
     },
     openDevices: function () {
       return click(findSideButton("device"));
+    },
+
+    // Opens the playing-from context the Spotify way: by clicking Spotify's
+    // own header link (inside its React tree), so its router handles it as
+    // in-app navigation. Clicking a copy of the URL from our overlay sits
+    // outside that tree and forces a full page load instead.
+    openContext: function () {
+      var pick = null;
+      try {
+        pick = pickContextLink();
+      } catch (e) {
+        pick = null;
+      }
+      if (!pick || !pick.el) return false;
+      return click(pick.el);
+    },
+
+    // Same mechanism for the artist name: click Spotify's own artist link
+    // (a[data-testid="context-item-info-artist"] in the widget), so the
+    // artist page opens as in-app navigation.
+    openArtist: function () {
+      try {
+        var widget = findWidget() || findPlayer();
+        if (widget && widget.querySelector) {
+          var link =
+            widget.querySelector('a[data-testid="context-item-info-artist"]') ||
+            widget.querySelector('a[href*="/artist/"], a[href*="/show/"]');
+          if (link) return click(link);
+        }
+      } catch (e) {}
+      return false;
     },
 
     // Volume
