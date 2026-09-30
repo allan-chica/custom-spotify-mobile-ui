@@ -63,20 +63,22 @@
   overflow-x: clip;
   scrollbar-width: none;
   padding: 18px 22px 12px;
-  background: var(--spm-bg);
+  background: var(--spm-solid-bg);
   border: 1px solid var(--spm-card-border);
   border-radius: var(--spm-radius);
   box-shadow: var(--spm-shadow);
-  backdrop-filter: blur(24px) saturate(1.2);
-  -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  animation: spm-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  animation: spm-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1) both;
   overscroll-behavior: contain;
   /* None so collapse drags are never stolen mid-gesture (a vertical pan
    * would hand the pointer to the page scroll and freeze the drag). All
    * in-card gestures are custom pointer handlers; the volume slider is a
    * custom bar for the same reason. Wheel scrolling still works. */
   touch-action: none;
-  transition: transform 0.14s ease, opacity 0.14s ease;
+  transition: transform 0.14s ease;
   /* No text selection anywhere on the card: drags (collapse, seek, art
    * swipe) must move the UI, never highlight titles and times. */
   user-select: none;
@@ -88,16 +90,11 @@
 }
 
 @keyframes spm-in {
-  /* Starts halfway faded on purpose: the outgoing mini unmounts mid-fade,
-   * so entering from 0 would dip through full transparency (background
-   * flash). The slide + remaining fade still read as an entrance. */
   from {
-    opacity: 0.45;
-    transform: translateY(10px) scale(0.99);
+    transform: translate3d(0, 20px, 0);
   }
   to {
-    opacity: 1;
-    transform: none;
+    transform: translate3d(0, 0, 0);
   }
 }
 
@@ -207,6 +204,7 @@
   width: min(100%, 264px);
   aspect-ratio: 1 / 1;
   margin: 14px auto 0;
+  isolation: isolate;
 }
 
 #spm-root .spm-blob {
@@ -455,12 +453,9 @@
   height: 130%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  /* Paint containment: the animated layers inside can never dirty
-   * ancestors, so each frame only recomposites this box. */
-  contain: paint;
   background: radial-gradient(circle, var(--spm-glow-strong) 0%, transparent 65%);
   opacity: 0;
-  transition: opacity 0.6s ease;
+  transition: opacity 0.25s ease;
   animation: spm-halo-core 2.6s ease-in-out infinite;
 }
 
@@ -773,8 +768,7 @@
 }
 
 #spm-root .spm-card.spm-leaving-card {
-  transform: translateY(56px);
-  opacity: 0;
+  transform: translateY(28px);
 }
 
 /* ---------- Collapsed mobile mini-player ---------- */
@@ -798,29 +792,26 @@
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  transition: transform 0.13s ease, opacity 0.13s ease;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  transition: transform 0.13s ease;
 }
 
 #spm-root.spm-collapsed .spm-miniplayer {
   display: flex;
-  animation: spm-mini-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1);
+  animation: spm-mini-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
 
 @keyframes spm-mini-in {
-  /* Same halfway-faded entry as the card (see spm-in): the outgoing card
-   * unmounts mid-fade, so this must never start at zero. */
   from {
-    opacity: 0.5;
-    transform: translateY(8px);
+    transform: translate3d(0, 8px, 0);
   }
   to {
-    opacity: 1;
-    transform: none;
+    transform: translate3d(0, 0, 0);
   }
 }
 
 #spm-root .spm-miniplayer.spm-leaving {
-  opacity: 0;
   transform: translateY(12px);
 }
 
@@ -1002,6 +993,12 @@
   /* Deliberately NO backdrop-filter anywhere in sheet mode: a full-screen
    * blur re-composites every frame on phone GPUs (the responsiveness
    * killer), and behind a solid panel there is nothing to frost anyway. */
+}
+
+#spm-root.spm-sheet .spm-card {
+  background: var(--spm-solid-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* NOTE: :not(.spm-collapsed) is load-bearing, not decorative. This rule

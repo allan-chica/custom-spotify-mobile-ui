@@ -268,19 +268,11 @@
     function expandAnimated() {
       if (!collapsed) return;
       clearTransitionTimer();
-      if (prefersReducedMotion()) {
-        setCollapsed(false);
-        return;
-      }
-      // Simple directional handoff: the mini sinks down and away while the
-      // full card rises up into place (entry floors keep coverage above
-      // zero throughout, so no background flash).
-      mini.classList.add("spm-leaving");
-      transitionTimer = window.setTimeout(function () {
-        transitionTimer = 0;
-        mini.classList.remove("spm-leaving");
-        setCollapsed(false);
-      }, 60);
+      mini.classList.remove("spm-leaving");
+      cardEl.classList.remove("spm-leaving-card");
+      cardEl.style.transform = "";
+      cardEl.style.opacity = "";
+      setCollapsed(false);
     }
 
     function collapseAnimated() {
