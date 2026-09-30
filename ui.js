@@ -74,6 +74,7 @@
       SVG.heart +
       "</button>" +
       "</header>" +
+      '<div class="spm-context" role="note" hidden>From <a class="spm-context-link"></a></div>' +
       '<div class="spm-stage">' +
       '<div class="spm-blob">' +
       '<img class="spm-art" alt="Album artwork" draggable="false" />' +
@@ -165,6 +166,8 @@
     var volFill = q(".spm-vol-fill");
     var volKnob = q(".spm-vol-knob");
     var collapseBtn = q(".spm-collapse");
+    var contextEl = q(".spm-context");
+    var contextLink = q(".spm-context-link");
     var lyricsBtn = q(".spm-lyrics-open");
     var queueBtn = q(".spm-queue");
     var devicesBtn = q(".spm-devices");
@@ -264,7 +267,7 @@
         transitionTimer = 0;
         mini.classList.remove("spm-leaving");
         setCollapsed(false);
-      }, 160);
+      }, 110);
     }
 
     function collapseAnimated() {
@@ -279,7 +282,7 @@
         transitionTimer = 0;
         cardEl.classList.remove("spm-leaving-card");
         setCollapsed(true);
-      }, 210);
+      }, 150);
     }
 
     // Drag-release path: the card is already mid-flight under the finger,
@@ -301,7 +304,7 @@
         cardEl.style.transform = "";
         cardEl.style.opacity = "";
         setCollapsed(true);
-      }, 210);
+      }, 150);
     }
 
     function applyStoredState() {
@@ -324,7 +327,7 @@
       btn.classList.add("spm-press");
       setTimeout(function () {
         btn.classList.remove("spm-press");
-      }, 180);
+      }, 140);
     }
 
     // --- transport wiring (adapter only) ---
@@ -354,6 +357,13 @@
     });
     lyricsBtn.addEventListener("click", function () {
       if (spotify.openLyrics() === false) setStatus("Lyrics is not available right now.");
+    });
+    contextLink.addEventListener("click", function () {
+      // Let Spotify navigate to the playlist (no preventDefault); on mobile
+      // get out of the way so the destination is actually visible.
+      try {
+        if (envInfo && envInfo.sheet && !collapsed) setCollapsed(true);
+      } catch (e) {}
     });
     queueBtn.addEventListener("click", function () {
       if (spotify.openQueue() === false) setStatus("Queue is not available right now.");
@@ -905,7 +915,7 @@
             transitionTimer = 0;
             mini.style.transform = "";
             mini.style.opacity = "";
-          }, 180);
+          }, 130);
         }
       }
     }
@@ -933,6 +943,22 @@
       }
       var artistText = snap.artist || (snap.playerReady ? "Unknown artist" : "Open Spotify and press play");
       if (artistEl.textContent !== artistText) artistEl.textContent = artistText;
+
+      // Playing-from context ("From Mix hip hop"). Hidden when unknown —
+      // never placeholder text.
+      var contextText = snap.context || "";
+      var contextHref = snap.contextHref || "";
+      if (contextLink.textContent !== contextText) contextLink.textContent = contextText;
+      var haveHref = contextLink.getAttribute("href") || "";
+      if (haveHref !== contextHref) {
+        if (contextHref) contextLink.setAttribute("href", contextHref);
+        else contextLink.removeAttribute("href");
+      }
+      if (contextText) {
+        if (contextEl.hasAttribute("hidden")) contextEl.removeAttribute("hidden");
+      } else if (!contextEl.hasAttribute("hidden")) {
+        contextEl.setAttribute("hidden", "");
+      }
 
       // Mini mirrors (same component, compact state).
       if (miniTitle.textContent !== titleEl.textContent) {

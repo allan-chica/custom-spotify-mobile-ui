@@ -67,14 +67,14 @@
   box-shadow: var(--spm-shadow);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  animation: spm-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1);
+  animation: spm-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1);
   overscroll-behavior: contain;
   /* None so collapse drags are never stolen mid-gesture (a vertical pan
    * would hand the pointer to the page scroll and freeze the drag). All
    * in-card gestures are custom pointer handlers; the volume slider is a
    * custom bar for the same reason. Wheel scrolling still works. */
   touch-action: none;
-  transition: transform 0.22s ease, opacity 0.22s ease;
+  transition: transform 0.14s ease, opacity 0.14s ease;
 }
 
 #spm-root .spm-card::-webkit-scrollbar {
@@ -163,6 +163,36 @@
   color: var(--spm-muted);
 }
 
+#spm-root .spm-context {
+  margin: 6px 8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--spm-muted);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-context[hidden] {
+  display: none;
+}
+
+#spm-root .spm-context-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+#spm-root .spm-context-link[href] {
+  cursor: pointer;
+}
+
+#spm-root .spm-context-link[href]:hover {
+  color: var(--spm-text);
+  text-decoration: underline;
+}
+
 /* ---------- Stage: squircle artwork ---------- */
 
 #spm-root .spm-stage {
@@ -182,7 +212,7 @@
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   /* Swipe flights glide; finger-follow disables the transition (see
    * .spm-dragging) so the art tracks 1:1 with zero lag. */
-  transition: transform 0.26s cubic-bezier(0.2, 0.9, 0.25, 1), opacity 0.26s ease;
+  transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.25, 1), opacity 0.18s ease;
   touch-action: pan-y;
   cursor: grab;
 }
@@ -198,7 +228,7 @@
   object-fit: cover;
   display: none;
   opacity: 0;
-  transition: opacity 0.5s ease;
+  transition: opacity 0.35s ease;
 }
 
 #spm-root .spm-art.spm-loaded {
@@ -406,7 +436,7 @@
 }
 
 #spm-root .spm-press {
-  animation: spm-press 0.18s ease;
+  animation: spm-press 0.13s ease;
 }
 
 @keyframes spm-press {
@@ -622,12 +652,12 @@
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  transition: transform 0.2s ease, opacity 0.2s ease;
+  transition: transform 0.13s ease, opacity 0.13s ease;
 }
 
 #spm-root.spm-collapsed .spm-miniplayer {
   display: flex;
-  animation: spm-mini-in 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
+  animation: spm-mini-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
 
 @keyframes spm-mini-in {

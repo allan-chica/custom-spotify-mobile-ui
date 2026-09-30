@@ -48,6 +48,15 @@ State reads (empty string when nothing is loaded — never site chrome):
   (podcasts included); a lone page footer is never mistaken for the player,
   so logged-out pages report "" instead of About/Jobs links.
 - Artist — `/artist/` or `/show/` links (or their text parent) only.
+- Context — where the song plays from, as a link. Primary source is the
+  Now Playing view header itself: an `<a href="/playlist/…">` (or album /
+  artist / show / collection) wrapping a heading — no "Playing from" text
+  exists there, so href shape + heading descendant is the signal (query
+  params stripped, `/track/` + `/episode/` never count, player-bar links
+  never leak in). Fallback is the Queue's "Next from:" phrasing with strict
+  anti-spoof rules. Cached per track; "" when unknown and the UI hides the
+  line instead of guessing. Rendered as "From Mix hip hop", clickable, and
+  tapping it collapses the sheet so the destination is visible.
 - Time/duration — progress slider (`value`/`max` in ms) first, time texts second.
 - Artwork — best of several sources, see below. `getArtwork()` keeps its
   signature; the UI never learns where the URL came from.
@@ -114,7 +123,9 @@ Mini-player + gestures:
 
 - Mini and full are two states of one component fed by the same snapshot
   (art, title, artist, play, like stay in sync in both). The mini is the
-  collapsed state on every viewport, including desktop.
+  collapsed state on every viewport, including desktop. State transitions
+  are staged and snappy (~110–150ms beats); `prefers-reduced-motion` gets
+  instant swaps.
 - Mobile opens on the mini-player by default (first run; afterwards the
   remembered choice wins).
 - Mini-player: floating bar (art, title, artist, like, prev, play, next),
@@ -129,8 +140,10 @@ Mini-player + gestures:
   drags starting on the artwork stay owned by the track-swipe gesture.
 - Like discovery: `add-button` testid, then like-mentioning buttons in the
   widget + player bar (never document-wide, never Dislike); state from
-  checked/pressed/active then labels. If the heart still disagrees, run
-  `SpotMobile.spotify.getLikeInfo()` in devtools and send the output.
+  checked/pressed/active, then Add-vs-Remove labels (past-tense "Added to"
+  / "Saved to" count as saved), then the + icon's own shape (plus strokes
+  vs check/filled glyph) as a last resort. If the heart still disagrees,
+  run `SpotMobile.spotify.getLikeInfo()` in devtools and send the output.
 - Transitions are staged (mini sinks as the card rises and vice versa) with
   shared artwork bridging the swap — never an abrupt display flip.
   `prefers-reduced-motion` gets instant swaps.

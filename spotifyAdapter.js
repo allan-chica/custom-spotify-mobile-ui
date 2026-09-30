@@ -44,7 +44,7 @@
     shuffle: ["shuffle", "aleatorio", "aléatoire", "zufällig", "zufallig", "casuale", "aleatoria"],
     repeat: ["repeat", "repetir", "répéter", "repeter", "wiederholen", "ripeti", "herhalen"],
     likeAdd: ["add to liked", "add to your liked", "save to your liked", "like", "me gusta", "enregistrer"],
-    likeRemove: ["remove from liked", "remove from your liked", "unlike", "unlike this"],
+    likeRemove: ["remove from liked", "remove from your liked", "unlike", "unlike this", "added to liked", "added to your liked", "saved to liked", "saved to your liked"],
     lyrics: ["lyrics", "letra", "paroles", "songtext", "testo"],
     queue: ["queue", "cola", "file d'attente", "warteschlange", "coda"],
     device: ["connect to a device", "devices", "dispositivos", "appareils", "geräte", "gerate"],
@@ -1133,6 +1133,35 @@
     return "off";
   }
 
+  // Reads the + button's icon itself: unsaved shows plus strokes (paths
+  // with horizontal AND vertical segments, e.g. "M12 5v14M5 12h14"), saved
+  // shows a lone check angle ("M20 6L9 17l-5-5", polyline) or a filled
+  // glyph. Only a last resort — attributes and labels decide first.
+  function iconShape(btn) {
+    try {
+      var svg = btn && btn.querySelector ? btn.querySelector("svg") : null;
+      if (!svg) return "none";
+      var rootFill = "";
+      try {
+        rootFill = svg.getAttribute ? svg.getAttribute("fill") || "" : "";
+      } catch (e) {}
+      var mark = "";
+      try {
+        mark = String(svg.outerHTML || svg.innerHTML || "").toLowerCase();
+      } catch (e) {}
+      if (!mark) return "unknown";
+      var hasH = /h\s*-?\d/i.test(mark);
+      var hasV = /v\s*-?\d/i.test(mark);
+      if (hasH && hasV) return "plus";
+      if (rootFill && rootFill.toLowerCase() !== "none") return "filled";
+      if (mark.indexOf("polyline") !== -1) return "check";
+      if (/[lL]\s*-?\d/.test(mark) && !/[cqsta]\s*-?\d/i.test(mark)) return "check";
+      return "unknown";
+    } catch (e) {
+      return "unknown";
+    }
+  }
+
   function isLiked() {
     var btn = findLikeButton();
     if (!btn) return false;
@@ -1147,10 +1176,14 @@
     if (includesAny(label, LABELS.likeRemove)) return true;
     if (includesAny(label, LABELS.likeAdd)) return false;
     // Last resort on an already-identified like button: labels promising
-    // removal ("unsave", "retirer", …) mean it is currently saved.
-    if (/\b(remove|unsave|retirer|quitar|entfernen|rimuovi|remover)\b/.test(label)) {
+    // removal ("unsave", "retirer", "saved", "added", …) mean it is saved.
+    if (/\b(remove|removed|unsave|unsaved|saved|added|retirer|quitar|entfernen|rimuovi|remover)\b/.test(label)) {
       return true;
     }
+    // Final fallback: mimic the + icon's own visual state.
+    var shape = iconShape(btn);
+    if (shape === "plus") return false;
+    if (shape === "check" || shape === "filled") return true;
     return false;
   }
 
@@ -1221,7 +1254,15 @@
     try {
       liked = isLiked();
     } catch (e) {}
-    return { selected: describe(selected), liked: liked, candidates: cands };
+    var icon = "unknown";
+    try {
+      icon = iconShape(selected);
+    } catch (e) {}
+    var context = { text: "", source: "" };
+    try {
+      context = getPlaybackContext();
+    } catch (e) {}
+    return { selected: describe(selected), liked: liked, icon: icon, context: context, candidates: cands };
   }
 
   function getVolume() {
@@ -1250,11 +1291,23 @@
     var duration = getDuration();
     var currentTime = getCurrentTime();
     if (duration && currentTime > duration) currentTime = duration;
+    var context = "";
+    var contextHref = "";
+    try {
+      var ctx = getPlaybackContext() || {};
+      context = ctx.text || "";
+      contextHref = ctx.href || "";
+    } catch (e) {
+      context = "";
+      contextHref = "";
+    }
     return {
       playerReady: !!findPlayer() && !!findToggleButton(),
       track: track,
       artist: artist,
       artwork: artwork,
+      context: context,
+      contextHref: contextHref,
       currentTime: currentTime,
       duration: duration,
       isPlaying: isPlaying(),
@@ -1264,6 +1317,198 @@
       volume: getVolume(),
       muted: getVolume() <= 0.001,
     };
+  }
+
+  /* ---------- Playback context (playlist / mix / album / …) ----------
+   *
+   * Spotify names the source of the current song in the Now Playing view
+   * header as a LINK wrapping a heading — no "Playing from" text exists:
+   *   <a href="/playlist/37i9dQZF1EQnqst5TRi17F?uid=…&uri=…">
+   *     <h1>Mix hip hop</h1>
+   *   </a>
+   * That structure IS the signal (href kind + heading descendant), so it is
+   * tried first. Classes and testids are ignored — only the href shape and
+   * the heading matter. The Queue's "Next from: …" phrasing stays as a
+   * fallback with strict anti-speech rules (short text, leading phrase, so
+   * lyrics can't spoof it). Cached per track; "" (+ no href) when unknown.
+   */
+
+  var ctxCache = { key: "", value: { text: "", href: "", source: "" } };
+
+  function findContextRegions() {
+    var regions = [];
+    function push(el) {
+      if (el && regions.indexOf(el) === -1 && regions.length < 6) regions.push(el);
+    }
+    try {
+      push(findNowPlayingPanel());
+      push(findPlayer());
+      var sides = document.querySelectorAll("aside, section, [role='complementary']");
+      for (var i = 0; i < sides.length; i++) push(sides[i]);
+    } catch (e) {}
+    return regions;
+  }
+
+  function parseContextText(text) {
+    var t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t || t.length > 140) return "";
+    var m = t.match(/^(?:.{0,4}?)(playing(?:\s+out\s+of|\s+from)|next\s+from|up\s+next\s+from)\s*[:\u2013\u2014-]?\s*(.+)$/i);
+    if (!m) return "";
+    var name = m[2].split("\u00b7")[0].trim();
+    if (name.length < 2 || name.length > 70) return "";
+    return name;
+  }
+
+  function scanRegionForContext(region) {
+    if (!region || !region.querySelectorAll) return { text: "", source: "" };
+    var els = [];
+    try {
+      els = Array.prototype.slice.call(
+        region.querySelectorAll("span, div, p, a, h1, h2, h3"),
+        0,
+        150
+      );
+    } catch (e) {
+      return { text: "", source: "" };
+    }
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var txt = "";
+      try {
+        txt = el.textContent || "";
+      } catch (e) {
+        continue;
+      }
+      var name = parseContextText(txt);
+      if (!name) continue;
+      // A wrapped link's text is the clean context name.
+      try {
+        var link = el.tagName === "A" ? el : el.querySelector ? el.querySelector("a") : null;
+        if (link && link.textContent && link.textContent.trim()) {
+          var lt = link.textContent.trim();
+          if (lt.length >= 2 && lt.length <= 70) {
+            return { text: lt, source: "link" };
+          }
+        }
+      } catch (e) {}
+      return { text: name, source: "text" };
+    }
+    return { text: "", source: "" };
+  }
+
+  // Side regions only (Now Playing panel + asides) — never the player bar
+  // itself, whose /artist/ widget links are songs' performers, not context.
+  function findSideRegions() {
+    var regions = [];
+    function push(el) {
+      if (el && regions.indexOf(el) === -1 && regions.length < 6) regions.push(el);
+    }
+    try {
+      push(findNowPlayingPanel());
+      var sides = document.querySelectorAll("aside, [role='complementary']");
+      for (var i = 0; i < sides.length; i++) push(sides[i]);
+    } catch (e) {}
+    return regions;
+  }
+
+  // "/playlist/37i9dQ…?uid=…&uri=…" (or absolute URLs) -> "/playlist/37i9dQ…".
+  function contextHrefInfo(href) {
+    var m = String(href || "").match(/\/(playlist|album|artist|show|collection)\/([A-Za-z0-9]+)/);
+    if (!m) return null;
+    return { kind: m[1], href: "/" + m[1] + "/" + m[2] };
+  }
+
+  // The header context link: a context-kind anchor wrapping a heading.
+  // Track/episode links are songs, never context, and are skipped.
+  function findContextLink() {
+    var none = { text: "", href: "", source: "" };
+    try {
+      var regions = findSideRegions();
+      // Pass 1: heading-bearing links (the header pattern above).
+      for (var p = 0; p < 2; p++) {
+        for (var r = 0; r < regions.length; r++) {
+          var links = [];
+          try {
+            links = regions[r].querySelectorAll(
+              'a[href*="/playlist/"], a[href*="/album/"], a[href*="/artist/"], a[href*="/show/"], a[href*="/collection/"]'
+            );
+          } catch (e) {
+            continue;
+          }
+          for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var info = null;
+            try {
+              info = contextHrefInfo(a.getAttribute("href"));
+            } catch (e) {
+              continue;
+            }
+            if (!info) continue;
+            var txt = "";
+            try {
+              txt = (a.textContent || "").replace(/\s+/g, " ").trim();
+            } catch (e) {
+              continue;
+            }
+            if (txt.length < 2 || txt.length > 70) continue;
+            if (p === 0) {
+              var head = null;
+              try {
+                head = a.querySelector("h1, h2, h3");
+              } catch (e) {
+                head = null;
+              }
+              if (!head) continue;
+              try {
+                var ht = (head.textContent || "").replace(/\s+/g, " ").trim();
+                if (ht.length >= 2 && ht.length <= 70) txt = ht;
+              } catch (e) {}
+            }
+            return { text: txt, href: info.href, source: "npv-link" };
+          }
+        }
+      }
+    } catch (e) {}
+    return none;
+  }
+
+  function getPlaybackContext() {
+    var none = { text: "", href: "", source: "" };
+    try {
+      var key = "";
+      try {
+        key = currentTrackKey();
+      } catch (e) {}
+      if (key && key !== " | " && key === ctxCache.key) return ctxCache.value;
+      var hit = findContextLink();
+      if (!hit.text) {
+        var regions = findContextRegions();
+        for (var i = 0; i < regions.length; i++) {
+          hit = scanRegionForContext(regions[i]);
+          if (hit.text) break;
+        }
+      }
+      if (!hit.text) {
+        var labelled = [];
+        try {
+          labelled = document.querySelectorAll("[aria-label]");
+        } catch (e) {}
+        for (var j = 0; j < labelled.length && j < 400; j++) {
+          var nm = "";
+          try {
+            nm = parseContextText(labelled[j].getAttribute("aria-label"));
+          } catch (e) {}
+          if (nm) {
+            hit = { text: nm, source: "aria" };
+            break;
+          }
+        }
+      }
+      if (key && key !== " | ") ctxCache = { key: key, value: hit };
+      return hit;
+    } catch (e) {
+      return none;
+    }
   }
 
   /* ---------- Write actions ---------- */
@@ -1434,7 +1679,7 @@
   /* ---------- Change notification ---------- */
 
   function snapshotKey(s) {
-    return [s.track, s.artist, s.artwork, s.isPlaying, s.shuffle, s.repeat, s.liked, s.duration, s.playerReady].join("|");
+    return [s.track, s.artist, s.artwork, s.context, s.isPlaying, s.shuffle, s.repeat, s.liked, s.duration, s.playerReady].join("|");
   }
 
   function emit(manual) {
@@ -1743,6 +1988,7 @@
     getArtworkCandidates: getArtworkCandidates,
     getViewportInfo: getViewportInfo,
     getLikeInfo: getLikeInfo,
+    getPlaybackContext: getPlaybackContext,
 
     // Internal discovery helpers (kept public for diagnostics/tests only).
     _findPlayerButton: findPlayerButton,
