@@ -436,6 +436,53 @@ artwork, transient-dance hygiene, add/remove/multi with verified flips,
 like-sync both directions, sheet open, search filter, track-change reload,
 reopen persistence, Escape + swipe-down close.
 
+### Buttons inside the sheet header
+
+Both sheets bind `pointerdown` on their header to start the swipe-down-to-close
+gesture, and that handler calls `preventDefault()`. Browsers suppress the
+compatibility mouse events when `pointerdown` is prevented — **including the
+`click`** — so every button inside the header was inert: `.spm-pclose` and
+`.spm-dclose` did nothing at all.
+
+Both drag handlers now ignore a press that started on a control, matching the
+guard the main card already used. Worth knowing when testing: a bare
+`element.click()` cannot catch this class of bug, because it never goes through
+`pointerdown`. `tests/probe-ui.js` dispatches a real pointerdown → pointerup →
+click sequence and honours `dispatchEvent`'s return value, which is false
+exactly when the default was prevented.
+
+## The Liked flourish
+
+Tapping the heart on an unsaved track Likes it, and the filled state gets a
+short burst: a cream/purple bloom, an expanding ring, and 14 shards on an even
+angular spread. Colours come from the same `--spm-halo-*` vars the artwork
+halos use, so it follows the light theme with no extra rules.
+
+Three things that were not obvious, and cost a screenshot each:
+
+- **The FX layer cannot live inside the heart.** `.spm-card` sets
+  `overflow-x: clip; overflow-y: auto`, and the heart sits in the card's
+  top-right corner — a radial burst is cropped to nothing. The layers are
+  therefore children of `#spm-root` (which does not clip), re-anchored to the
+  heart's centre from `offset*` coordinates on every burst. `getBoundingClientRect`
+  would be wrong here: it returns post-`zoom` visual pixels, not the root's box.
+- **`spm-like-fire` and `spm-like-fx` are the same element**, so the bloom and
+  ring must use `.spm-like-fx.spm-like-fire::before`. Writing it as
+  `.spm-like-fire .spm-like-fx::before` is a *descendant* combinator that never
+  matches, and it fails completely silently — no bloom, no ring, no error.
+- **Only the visible heart bursts.** Both hearts track the same snapshot, but the
+  mini bar is `display: none` unless collapsed; bursting from a hidden button
+  anchors to a zero rect and throws the effect across the screen.
+
+It fires on the OFF→ON transition rather than on the tap, so an external Like
+(from Spotify's own UI, a keyboard shortcut, another tab) gets the same
+feedback. Unliking never celebrates. `prefers-reduced-motion` drops the bloom
+and shards entirely — the heart still fills, it just does not throw confetti.
+
+To see it frozen mid-burst: `node tests/cdp-shot.js
+"tests/preview-flourish.html?frozen=1" out.png 420 780` (set `SPM_LIGHT=1` for
+the light palette).
+
 ## Mobile scaling: measured, not hardcoded
 
 On phones (Quetta Android) Spotify serves its DESKTOP layout in a wide
@@ -502,6 +549,7 @@ server — they drive `file://` over the Chrome DevTools Protocol):
 | `npm run test:tippy` | `tests/real-dom-tippy.html` — the same sheet inside its real `div[data-tippy-root] > div#context-menu` portal, driven by a fake popper that only lays out once it is actually visible. This is what caught the veil deadlock below. |
 | `npm run test:sheet` | `tests/harness.html` + `tests/probe-sheet.js` — taps our own heart, asserts the sheet lists **every** playlist, stages a row and presses Done, then verifies against the harness's server-side membership and checks no native menu leaked behind the sheet. |
 | `npm run test:fallback` | `tests/harness.html` + `tests/probe-fallback.js` — forces the fallback (curation button hidden) and asserts the merged library+submenu list has no duplicates, no rows without an id, and exact `spotify:` uris. |
+| `npm run test:ui` | `tests/harness.html` + `tests/probe-ui.js` — both sheets' top-right close buttons actually close (with a real pointer sequence, since a bare `.click()` can never catch a `pointerdown` that prevents default), the header swipe still works, and the heart flourish fires on the OFF→ON transition only, survives the icon swap, cleans up, skips hidden hearts, and respects reduced-motion. |
 
 `tests/cdp-run.js` and `tests/cdp-probe.js` are the two drivers (both take a
 repo-relative path). The harness's fake rows deliberately mirror the real row

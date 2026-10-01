@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SPM — heart flourish preview</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  body { margin: 0; background: #0b0b0c; display: grid; place-items: center; height: 100vh; font: 13px system-ui; color: #888; }
+  #stage { position: relative; }
+  /* Freeze the burst mid-flight so a screenshot is deterministic. These must
+   * match the specificity of the real rules (#spm-root ...) and come later in
+   * source order, or the shorthand in style.css wins and nothing is frozen. */
+  body.frozen #spm-root .spm-like-fx.spm-like-fire::before { animation-play-state: paused; animation-delay: -200ms; }
+  body.frozen #spm-root .spm-like-fx.spm-like-fire::after  { animation-play-state: paused; animation-delay: -130ms; }
+  body.frozen #spm-root .spm-like-fire i                  { animation-play-state: paused; animation-delay: -200ms; }
+  body.frozen #spm-root .spm-like-pop > svg               { animation-play-state: paused; animation-delay: -190ms; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<p id="hint" style="position:fixed;bottom:12px">toggle <code>?frozen=1</code> in the URL to freeze mid-burst</p>
+
+<script>
+window.__logs = [];
+(function () {
+  var orig = console.log;
+  console.log = function () {
+    try { window.__logs.push(Array.prototype.map.call(arguments, String).join(" ")); } catch (e) {}
+    return orig.apply(console, arguments);
+  };
+})();
+</script>
+<script src="../ui.js"></script>
+<script>
+(async function () {
+  const sp = window.SpotMobile.spotify;
+  const url = new URL(location.href);
+  const frozen = url.searchParams.get("frozen") === "1";
+  if (frozen) document.body.classList.add("frozen");
+
+  const snap = {
+    track: "Bohemian Rhapsody", artist: "Queen", artwork: "",
+    context: "A Night at the Opera", isPlaying: true,
+    shuffle: false, repeat: "off", liked: false,
+    duration: 355, position: 42, volume: 0.8,
+    muted: false, lyrics: false, playerReady: true, queue: false,
+  };
+
+  const player = window.SpotMobile.createMobilePlayer(sp);
+  player.mount(document.body);
+
+  // Paint the OFF state, then flip ON: that transition is what fires it.
+  player.render(snap);
+  snap.liked = true;
+  player.render(snap);
+
+  // Re-render with liked already true: must NOT re-fire (churn guard).
+  player.render(snap);
+
+  const root = document.getElementById("spm-root");
+  const layer = root.querySelector('.spm-like-fx[data-likefx="main"]');
+  const shard = layer && layer.querySelector("i");
+  const cs = shard ? getComputedStyle(shard) : null;
+  const lcs = layer ? getComputedStyle(layer) : null;
+  const rect = layer ? layer.getBoundingClientRect() : null;
+  const report = "shards=" + root.querySelectorAll(".spm-like-fx i").length +
+    " fire=" + root.querySelectorAll(".spm-like-fire").length +
+    " liked=" + root.querySelector(".spm-like").getAttribute("data-liked") +
+    " | layerInline=" + (layer && layer.style.left + "," + layer.style.top) +
+    " layerZ=" + (lcs && lcs.zIndex) +
+    " layerPos=" + (lcs && lcs.position) +
+    " layerRect=" + (rect && Math.round(rect.left) + "," + Math.round(rect.top)) +
+    " | shardOpacity=" + (cs && cs.opacity) +
+    " animName=" + (cs && cs.animationName) +
+    " playState=" + (cs && cs.animationPlayState) +
+    " bg=" + (cs && cs.backgroundColor);
+  console.log("preview: " + report);
+  document.title = "READY";
+})();
+</script>
+</body>
+</html>

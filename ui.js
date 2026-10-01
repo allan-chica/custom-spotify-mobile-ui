@@ -82,7 +82,7 @@
       SVG.chevLeft +
       "</button>" +
       '<div class="spm-top-title">Current Track</div>' +
-      '<button class="spm-circle spm-like" type="button" aria-label="Add to Liked Songs" aria-pressed="false">' +
+      '<button class="spm-circle spm-like" type="button" data-likefx="main" aria-label="Add to Liked Songs" aria-pressed="false">' +
       SVG.heart +
       "</button>" +
       "</header>" +
@@ -133,7 +133,7 @@
       '<div class="spm-mini-fallback" aria-hidden="true">' + SVG.note + "</div></div>" +
       '<div class="spm-mini-titles"><div class="spm-mini-title">Nothing playing</div>' +
       '<div class="spm-mini-artist">Open Spotify</div></div>' +
-      '<button class="spm-mini-like" type="button" aria-label="Add to Liked Songs" aria-pressed="false">' +
+      '<button class="spm-mini-like" type="button" data-likefx="mini" aria-label="Add to Liked Songs" aria-pressed="false">' +
       SVG.heart +
       "</button>" +
       '<button class="spm-mini-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
@@ -203,6 +203,22 @@
     var artistEl = q(".spm-artist");
     var artistBtn = q(".spm-artist-link");
     var likeBtn = q(".spm-like");
+    // The heart flourish cannot live inside the card: .spm-card sets
+    // overflow-x/y, so a radial burst at the top-right corner would be clipped
+    // away to nothing. These live directly under #spm-root (which does not
+    // clip) and are re-anchored to their heart's centre on every burst.
+    // Inserted after the card so the mini bar and both sheets still paint
+    // above them.
+    var likeFx = { main: null, mini: null };
+    ["main", "mini"].forEach(function (which) {
+      var layer = document.createElement("div");
+      layer.className = "spm-like-fx";
+      layer.setAttribute("aria-hidden", "true");
+      layer.setAttribute("data-likefx", which);
+      if (mini && mini.parentNode) mini.parentNode.insertBefore(layer, mini);
+      else root.appendChild(layer);
+      likeFx[which] = layer;
+    });
     var playBtn = q(".spm-play");
     var prevBtn = q(".spm-prev");
     var nextBtn = q(".spm-next");
@@ -455,6 +471,95 @@
       setTimeout(function () {
         btn.classList.remove("spm-press");
       }, 140);
+    }
+
+    /* ---------- Liked flourish ----------
+     * Fires on the OFF -> ON transition of the heart, so it covers both a tap
+     * and an external Like (Spotify's own UI, keyboard, another tab) — the
+     * filled state is the moment, wherever it comes from.
+     *
+     * A cream/purple bloom (same radial-gradient language as .spm-halos) plus
+     * an even angular spread of shards, tinted from the same halo vars so it
+     * follows the light theme for free. Shards are throwaway nodes carrying
+     * per-particle custom props; JS only picks the numbers, all motion lives in
+     * CSS so reduced-motion can switch it off wholesale.
+     */
+    var LIKE_SHARDS = 14;
+
+    function svgFromMarkup(markup) {
+      var box = document.createElement("div");
+      box.innerHTML = markup;
+      return box.firstChild;
+    }
+
+    // Swap only the <svg>, never innerHTML — cheaper and it never disturbs
+    // anything else living inside the button.
+    function setHeartGlyph(btn, liked) {
+      var cur = btn.querySelector("svg");
+      if (!cur) {
+        btn.innerHTML = liked ? SVG.heartFill : SVG.heart;
+        return;
+      }
+      var next = svgFromMarkup(liked ? SVG.heartFill : SVG.heart);
+      if (next && cur.parentNode) cur.parentNode.replaceChild(next, cur);
+    }
+
+    // Pre-zoom layout coordinates for an element's centre, relative to
+    // #spm-root. Offset* stay in the root's own box, which is what the
+    // absolutely positioned FX layer needs — unlike getBoundingClientRect,
+    // which returns post-`zoom` visual pixels.
+    function anchorLikeFx(btn, layer) {
+      var x = 0;
+      var y = 0;
+      var n = btn;
+      while (n && n !== root) {
+        x += n.offsetLeft || 0;
+        y += n.offsetTop || 0;
+        n = n.offsetParent;
+      }
+      x += (btn.offsetWidth || 0) / 2;
+      y += (btn.offsetHeight || 0) / 2;
+      layer.style.left = Math.round(x) + "px";
+      layer.style.top = Math.round(y) + "px";
+    }
+
+    function likeFlourish(btn) {
+      if (!btn) return;
+      if (prefersReducedMotion()) return;
+      // Both hearts follow the same snapshot, so a like would fire BOTH — but
+      // only one of them is on screen (the mini bar is display:none unless
+      // collapsed). Bursting from a hidden one anchors to a stale/zero rect and
+      // throws the effect across the screen.
+      if (!btn.offsetParent && btn.offsetWidth === 0) return;
+      var layer = likeFx[btn.getAttribute("data-likefx") || "main"];
+      if (!layer) return;
+      // The heart can move (collapse, relayout) between like and burst.
+      anchorLikeFx(btn, layer);
+      var fx = layer;
+      fx.textContent = "";
+      fx.classList.remove("spm-like-fire");
+      void fx.offsetWidth;
+      fx.classList.add("spm-like-fire");
+      var i;
+      var shard;
+      for (i = 0; i < LIKE_SHARDS; i++) {
+        shard = document.createElement("i");
+        // Even spread + jitter, so it reads as a burst and not a fan.
+        shard.style.setProperty("--a", Math.round((360 / LIKE_SHARDS) * i + (Math.random() * 26 - 13)) + "deg");
+        shard.style.setProperty("--d", 24 + Math.round(Math.random() * 30) + "px");
+        shard.style.setProperty("--s", 3 + Math.round(Math.random() * 3) + "px");
+        shard.style.setProperty("--dur", 540 + Math.round(Math.random() * 340) + "ms");
+        shard.style.setProperty("--delay", Math.round(Math.random() * 70) + "ms");
+        shard.style.setProperty("--spin", Math.round(Math.random() * 720 - 360) + "deg");
+        shard.style.setProperty("--c", i % 3 === 0
+          ? "rgba(var(--spm-halo-cover-rgb), 0.95)"
+          : "rgba(var(--spm-halo-accent-rgb), 0.95)");
+        fx.appendChild(shard);
+      }
+      window.setTimeout(function () {
+        fx.classList.remove("spm-like-fire");
+        fx.textContent = "";
+      }, 1150);
     }
 
     // Optimistic play/pause flip: paint the opposite icon the moment the
@@ -2035,6 +2140,11 @@
     function sheetDragStart(e) {
       if (!sheetOpen || sheetDrag) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
+      // Never hijack a press that started on a control. preventDefault() below
+      // suppresses the compatibility mouse events — including the `click` — so
+      // dragging from the header would leave the close button inert.
+      var tgt = e.target;
+      if (tgt && tgt.closest && tgt.closest("button, a, input, select, textarea")) return;
       sheetDrag = {
         id: e.pointerId,
         y0: e.clientY,
@@ -2438,7 +2548,7 @@
       psheetState.appendChild(psheetStatusBlock());
     }
 
-    function applyPsheetList(list, statusHint) {
+    function applyPsheetList(list, statusHint, resetDraft) {
       psheetList = list || [];
       if (statusHint) {
         psheetStatus = statusHint;
@@ -2447,10 +2557,25 @@
       } else {
         psheetStatus = "ready";
       }
-      // Fresh server truth resets the draft (open, retry, track change).
+      // Fresh server truth normally resets the draft (open, retry, track
+      // change). The exception matters: the initial load is DEFERRED so the
+      // slide never stutters, so a fast tap can land before it resolves —
+      // resetting there silently threw the tap away. When the sheet is already
+      // open and dirty, rebase the draft onto the new truth instead: keep
+      // every staged intent, drop keys the new list no longer has.
+      var keepDraft = !resetDraft && psheetOpen && psheetDirty;
       psheetInitial = psheetList;
-      psheetDraft = {};
-      psheetDirty = false;
+      if (keepDraft) {
+        var kept = {};
+        for (var i = 0; i < psheetList.length; i++) {
+          var key = pkeyOf(psheetList[i]);
+          if (Object.prototype.hasOwnProperty.call(psheetDraft, key)) kept[key] = psheetDraft[key];
+        }
+        psheetDraft = kept;
+      } else {
+        psheetDraft = {};
+        psheetDirty = false;
+      }
       psheetSaving = false;
       paintPsheetFoot();
       var sig = plistSig(psheetFiltered()) + "|" + psheetStatus + "|" + pdraftSig();
@@ -2529,8 +2654,10 @@
       promise
         .then(function (list) {
           if (!psheetOpen) return;
+          // force=true means "start over": retry after a failed save, or a
+          // track change under the open sheet. Both want the draft dropped.
           if (list && list.length) {
-            applyPsheetList(list);
+            applyPsheetList(list, null, !!force);
           } else if (!psheetList.length) {
             var st = null;
             try {
@@ -2540,7 +2667,7 @@
               psheetStatus = "error";
               renderPSheet();
             } else {
-              applyPsheetList([], "empty");
+              applyPsheetList([], "empty", !!force);
             }
           }
         })
@@ -2768,6 +2895,11 @@
     function psheetDragStart(e) {
       if (!psheetOpen || psheetDrag) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
+      // Never hijack a press that started on a control. preventDefault() below
+      // suppresses the compatibility mouse events — including the `click` — so
+      // dragging from the header left .spm-pclose completely inert.
+      var tgt = e.target;
+      if (tgt && tgt.closest && tgt.closest("button, a, input, select, textarea")) return;
       psheetDrag = {
         id: e.pointerId,
         y0: e.clientY,
@@ -3052,8 +3184,10 @@
         wantLiked ? "Remove from Liked Songs" : "Add to Liked Songs"
       );
       if (wantLiked !== shownLiked) {
-        likeBtn.innerHTML = wantLiked ? SVG.heartFill : SVG.heart;
+        setHeartGlyph(likeBtn, wantLiked);
         likeBtn.setAttribute("data-liked", wantLiked ? "1" : "0");
+        // Flourish on the way ON only — unliking must not celebrate.
+        if (wantLiked) likeFlourish(likeBtn);
       }
       // Mini like mirrors with its own churn guard.
       var miniShownLiked = miniLike.getAttribute("data-liked") === "1";
@@ -3064,8 +3198,9 @@
         wantLiked ? "Remove from Liked Songs" : "Add to Liked Songs"
       );
       if (wantLiked !== miniShownLiked) {
-        miniLike.innerHTML = wantLiked ? SVG.heartFill : SVG.heart;
+        setHeartGlyph(miniLike, wantLiked);
         miniLike.setAttribute("data-liked", wantLiked ? "1" : "0");
+        if (wantLiked) likeFlourish(miniLike);
       }
 
       // Duration + volume (skip while dragging the volume bar).

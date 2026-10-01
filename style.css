@@ -153,6 +153,138 @@
   border-color: rgba(244, 241, 234, 0.45);
 }
 
+/* ---------- Liked flourish: bloom + shards ----------
+ * Triggered from ui.js (likeFlourish) on the heart's OFF -> ON transition.
+ * Everything animated lives here; JS only sets per-shard custom props, so
+ * reduced-motion below can disable the whole thing in one place.
+ * Colours come from the halo vars, so the light theme needs no extra rules. */
+
+/* The layers are children of #spm-root, NOT of the heart: .spm-card clips
+ * (overflow-x/y), so a burst rendered inside it is cropped to nothing. JS
+ * re-anchors each layer to its heart's centre via left/top. */
+#spm-root .spm-like-fx {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  /* Shards and bloom must be able to escape the origin box. */
+  overflow: visible;
+  z-index: 3;
+}
+
+/* The bloom: same radial-gradient language as .spm-halos. */
+#spm-root .spm-like-fx::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  margin: -19px 0 0 -19px;
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.35);
+  background: radial-gradient(
+    circle,
+    rgba(var(--spm-halo-accent-rgb), 0.45) 0%,
+    rgba(var(--spm-halo-cover-rgb), 0.18) 45%,
+    transparent 72%
+  );
+}
+
+/* spm-like-fire and spm-like-fx are on the SAME element, so these must be a
+ * compound class selector — `.spm-like-fire .spm-like-fx` is a DESCENDANT
+ * combinator and would never match, silently killing the bloom and the ring. */
+#spm-root .spm-like-fx.spm-like-fire::before {
+  animation: spm-like-bloom 620ms cubic-bezier(0.16, 0.8, 0.3, 1) forwards;
+}
+
+/* Shards: rotate to the angle, then push straight out along it. */
+#spm-root .spm-like-fx i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--s, 5px);
+  height: var(--s, 5px);
+  margin: calc(var(--s, 5px) / -2) 0 0 calc(var(--s, 5px) / -2);
+  border-radius: 1.5px;
+  background: var(--c, rgba(var(--spm-halo-accent-rgb), 0.95));
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: spm-like-shard var(--dur, 700ms) cubic-bezier(0.16, 0.72, 0.32, 1)
+    var(--delay, 0ms) forwards;
+}
+
+/* A soft ring so the burst has a leading edge, not just scattered dots. */
+#spm-root .spm-like-fx.spm-like-fire::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  margin: -19px 0 0 -19px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(var(--spm-halo-accent-rgb), 0.85);
+  opacity: 0;
+  transform: scale(0.3);
+  animation: spm-like-ring 560ms cubic-bezier(0.16, 0.8, 0.3, 1) forwards;
+}
+
+@keyframes spm-like-bloom {
+  0% { opacity: 0; transform: scale(0.35); }
+  22% { opacity: 1; }
+  100% { opacity: 0; transform: scale(2.1); }
+}
+
+@keyframes spm-like-ring {
+  0% { opacity: 0; transform: scale(0.3); }
+  18% { opacity: 0.9; }
+  100% { opacity: 0; transform: scale(2.35); }
+}
+
+@keyframes spm-like-shard {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(0) scale(0.3) rotate(0deg);
+  }
+  16% { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--a)) translateY(calc(var(--d) * -1)) scale(1)
+      rotate(var(--spin));
+  }
+}
+
+/* The icon itself pops. Overshoot then settle, so it reads as a "thump".
+ * (spm-like-pop is on the button and the icon is its direct child.) */
+#spm-root .spm-like-pop > svg {
+  animation: spm-like-pop 520ms cubic-bezier(0.2, 1.5, 0.4, 1);
+  transform-origin: 50% 55%;
+}
+
+@keyframes spm-like-pop {
+  0% { transform: scale(0.55); }
+  42% { transform: scale(1.34); }
+  68% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+
+/* The mini heart is smaller — tighten the burst so it does not swamp the bar.
+ * Keyed off the layer's own data-likefx (they are root children, so no
+ * sibling relationship exists to hang a combinator off). */
+#spm-root .spm-like-fx[data-likefx="mini"]::before,
+#spm-root .spm-like-fx[data-likefx="mini"]::after {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+}
+#spm-root .spm-like-fx[data-likefx="mini"]::after {
+  border-width: 1.2px;
+}
+
 /* ---------- Header ---------- */
 
 #spm-root .spm-top {
@@ -1267,6 +1399,10 @@
   #spm-root .spm-art,
   #spm-root .spm-blob,
   #spm-root .spm-circle,
+  #spm-root .spm-like-pop > svg,
+  #spm-root .spm-like-fx::before,
+  #spm-root .spm-like-fx::after,
+  #spm-root .spm-like-fx i,
   #spm-root .spm-play,
   #spm-root .spm-halos,
   #spm-root .spm-halos::before,

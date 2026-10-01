@@ -4751,15 +4751,38 @@
       subscribers.forEach(function (cb) {
         try {
           cb(snap);
-        } catch (e) {}
+        } catch (e) {
+          reportSubscriberError(e);
+        }
       });
     } else {
       subscribers.forEach(function (cb) {
         try {
           cb(snap, true);
-        } catch (e) {}
+        } catch (e) {
+          reportSubscriberError(e);
+        }
       });
     }
+  }
+
+  // A throwing subscriber is isolated so it cannot break the others, but it
+  // must NOT vanish silently: a UI fault inside render() otherwise looks
+  // exactly like "the button does nothing", which is how the sheet's dead
+  // close button and a bad helper name both hid for so long. Deduped, because
+  // a persistent fault would otherwise log on every single snapshot.
+  var reportedSubscriberErrors = {};
+  function reportSubscriberError(e) {
+    try {
+      var msg = (e && (e.message || e.name)) || String(e);
+      var where = (e && e.stack ? String(e.stack).split("\n")[1] || "" : "").trim();
+      var sig = msg + "|" + where;
+      if (reportedSubscriberErrors[sig]) return;
+      reportedSubscriberErrors[sig] = true;
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[SpotMobile] snapshot subscriber threw: " + msg + where);
+      }
+    } catch (x) {}
   }
 
   var emitDebounced = (function () {
