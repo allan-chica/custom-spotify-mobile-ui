@@ -1388,3 +1388,320 @@
     height: 58px;
   }
 }
+
+/* ---------- Custom Devices bottom sheet ----------
+ * A layer over the existing player: the card is never moved or rebuilt, the
+ * sheet slides up from the bottom edge and the backdrop owns all input while
+ * it is open. Same palette, radii, hairlines and shadows as the card, and
+ * every length uses the measured visible viewport (--spm-vw/--spm-vh) so it
+ * lands full-screen on phones where Spotify scales its wide layout down. */
+
+#spm-root {
+  --spm-row-hover: rgba(244, 241, 234, 0.06);
+  --spm-sheet-veil: rgba(0, 0, 0, 0.55);
+}
+
+#spm-root .spm-dbackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  background: var(--spm-sheet-veil);
+  opacity: 1;
+  /* The sheet-mode root is pointer-events:none so the page below stays
+   * reachable; the sheet layers must opt back in explicitly. */
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#spm-root .spm-dbackdrop[hidden],
+#spm-root .spm-dsheet[hidden],
+#spm-root .spm-dnotice[hidden] {
+  display: none;
+}
+
+#spm-root .spm-dsheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  pointer-events: auto;
+  margin: 0 auto;
+  width: min(560px, calc(100% - 24px));
+  max-height: min(calc(var(--spm-vh) * 0.82), 620px);
+  display: flex;
+  flex-direction: column;
+  background: var(--spm-solid-bg);
+  border-top: 1px solid var(--spm-card-border);
+  border-radius: var(--spm-radius) var(--spm-radius) 0 0;
+  box-shadow: 0 -22px 60px rgba(0, 0, 0, 0.5), 0 -2px 10px rgba(0, 0, 0, 0.3);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  overflow: hidden;
+  touch-action: none;
+  will-change: transform;
+  /* Transitions are opt-in: dragging sets the pose directly, the anim class
+   * hands control to the compositor for open/close/snap-back. */
+  transition: none;
+}
+
+#spm-root .spm-dsheet.spm-dsheet-anim {
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#spm-root .spm-dbackdrop.spm-dsheet-anim {
+  transition: opacity 0.22s ease;
+}
+
+/* The player behind the sheet is visible but inert. */
+#spm-root.spm-dsheet-open .spm-card,
+#spm-root.spm-dsheet-open .spm-miniplayer {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#spm-root .spm-dgrab {
+  padding: 9px 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+}
+
+#spm-root .spm-dhandle {
+  display: block;
+  width: 44px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--spm-line-strong);
+}
+
+#spm-root .spm-dhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 22px 8px;
+  touch-action: none;
+}
+
+#spm-root .spm-dtitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: 0.015em;
+  color: var(--spm-text);
+}
+
+#spm-root .spm-dbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 2px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  touch-action: pan-y;
+}
+
+#spm-root .spm-dbody::-webkit-scrollbar {
+  display: none;
+}
+
+#spm-root .spm-dlist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Empty line sitting under the current-device row (not a full empty state). */
+#spm-root .spm-dlist:not([hidden]) + .spm-dstate .spm-dstatus {
+  gap: 6px;
+  padding: 12px 10px 18px;
+}
+
+#spm-root .spm-ditem {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#spm-root .spm-drow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  text-align: left;
+  color: var(--spm-text);
+  transition: background 0.16s, color 0.16s;
+}
+
+#spm-root .spm-drow:hover {
+  background: var(--spm-row-hover);
+}
+
+#spm-root .spm-drow:active {
+  background: var(--spm-row-hover);
+}
+
+#spm-root .spm-dicon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--spm-row-hover);
+  color: var(--spm-muted);
+}
+
+#spm-root .spm-dicon svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+#spm-root .spm-dtext {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+
+#spm-root .spm-dname {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-dsub {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--spm-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#spm-root .spm-dtail {
+  flex: 0 0 auto;
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--spm-faint);
+}
+
+#spm-root .spm-drow.spm-dactive {
+  background: var(--spm-row-hover);
+}
+
+#spm-root .spm-drow.spm-dactive .spm-dname {
+  font-weight: 750;
+}
+
+#spm-root .spm-drow.spm-dactive .spm-dicon,
+#spm-root .spm-drow.spm-dactive .spm-dtail {
+  color: var(--spm-solid);
+}
+
+#spm-root .spm-drow.spm-dpending .spm-dtail {
+  color: var(--spm-muted);
+}
+
+#spm-root .spm-dspin svg {
+  display: block;
+  animation: spm-dspin 0.9s linear infinite;
+}
+
+@keyframes spm-dspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#spm-root .spm-dstatus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 10px 26px;
+}
+
+#spm-root .spm-dstatus .spm-dspin {
+  color: var(--spm-muted);
+}
+
+#spm-root .spm-dmsg {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: 0.03em;
+  color: var(--spm-muted);
+  text-align: center;
+}
+
+#spm-root .spm-dretry {
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 1px solid var(--spm-line);
+  border-radius: 12px;
+  color: var(--spm-text);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+#spm-root .spm-dretry:hover {
+  border-color: var(--spm-line-strong);
+  background: var(--spm-row-hover);
+}
+
+#spm-root .spm-dnotice {
+  margin: 0;
+  padding: 2px 24px calc(12px + env(safe-area-inset-bottom, 0px));
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--spm-muted);
+  text-align: center;
+}
+
+/* Phones: the sheet spans the real glass width (measured, not 100vw). */
+#spm-root.spm-sheet .spm-dsheet {
+  width: var(--spm-vw);
+  max-width: none;
+  margin: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  #spm-root {
+    --spm-row-hover: rgba(23, 23, 21, 0.06);
+    --spm-sheet-veil: rgba(30, 25, 15, 0.38);
+  }
+
+  #spm-root .spm-dsheet {
+    box-shadow: 0 -22px 60px rgba(30, 25, 15, 0.28), 0 -2px 10px rgba(30, 25, 15, 0.16);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #spm-root .spm-dsheet,
+  #spm-root .spm-dbackdrop,
+  #spm-root .spm-dspin svg {
+    animation: none;
+    transition: none;
+  }
+}

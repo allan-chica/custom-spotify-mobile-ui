@@ -15,6 +15,7 @@ Spotify remains responsible for playback. Our UI only clicks / reads Spotify's
 ├── ui.js              # Mobile player UI, talks to Spotify via the adapter only
 ├── content.js         # Mounts the UI, re-mounts after SPA navigation
 ├── style.css          # Scoped under #spm-root, never rewrites Spotify styles
+├── tests/             # dev-only fake-Spotify harness (never packaged)
 └── README.md
 ```
 
@@ -206,6 +207,106 @@ Notes on the concept adaptation:
   The blob now ripples harder (2nd/4th/6th/8th harmonics, still
   mirror-symmetric on all four sides with its center on the artwork).
 
+## Devices: custom sheet over Spotify's real Connect picker
+
+The Devices button keeps its look but no longer shows Spotify's own picker:
+tapping it opens our bottom sheet (slide-up, dimming backdrop, drag handle,
+edge-to-edge on phones, centered 560px panel on desktop, light/dark aware,
+reduced-motion aware). Swipe the handle down, tap the chevron, tap the
+backdrop, or press Escape to close; a downward fling closes from a short
+drag, a slow drag has to travel further. A swipe up from the bottom edge of
+the player opens it too.
+
+Timing: the sheet responds to the press-release (`pointerup`) rather than
+the browser's synthesised `click`, which on touch can be swallowed by
+scroll slop, `touch-action`, or a cancelled pointer — that is what made
+"tap Devices" feel random while holding it always worked. Open/close is
+~0.26s, and the first device read is deferred until the slide has landed:
+reading opens Spotify's own panel, and doing that mid-animation made the
+open stutter (the cached list is on screen immediately).
+
+Spotify stays the source of truth — the sheet is only a presentation layer:
+
+```text
+Spotify device state -> adapter -> sheet -> user tap -> adapter -> Spotify transfer
+```
+
+The adapter opens Spotify's own Connect picker to READ it and keeps it out
+of sight the whole time (a temporary veil stylesheet rule + inline
+`visibility:hidden !important`), so the user never sees a desktop popover
+behind our sheet; it only closes a picker it opened itself. Tapping a row
+dispatches the click on the element Spotify's transfer handler listens to,
+so the switch is a REAL playback transfer. `selectDevice()` reports success
+only once Spotify's own picker shows the new device as current — otherwise
+the UI says "Couldn't switch to …" and never marks a device active.
+
+Markup contract (extracted from Spotify's shipped web-player bundle, never
+guessed; generated class names are never used):
+
+- row: `[data-testid="device-picker-row-sidepanel"]`, `role="group"`,
+  `aria-labelledby="listrow-title-<deviceId>"`
+- title: `[data-testid="list-row-title"]` / `id="listrow-title-<deviceId>"`;
+  subtitle: `id="listrow-subtitle-<deviceId>"` (real status text, may be empty)
+- icons: `[data-testid="main-icon"]` (remote device), `device-icon` (current)
+- list: `[data-testid^="devices-list-"]`; the current device lives in the
+  panel header block (key `device-picker-header`) and is NOT in that list
+- click: the transfer handler sits on the wrapping `<li role="listitem">`,
+  so the click is dispatched there (the row's own onClick is a no-op)
+- empty: `[data-testid="device-picker-section-heading"]` ("No other devices
+  found") + `[data-testid="device-picker-troubleshooting-list"]`
+- panel: `<aside id="Desktop_PanelContainer_Id">` with
+  `[data-testid="PanelHeader_CloseButton"]`
+
+Only real Spotify text is shown: the device name and Spotify's own subtitle
+("Unavailable", …). Device *types* are not in the DOM (only icons), so no
+type is ever invented; when the list holds only the current device the sheet
+says "No other devices found" — Spotify's own words.
+
+Switching is patient and honest. A real Connect handshake is not instant (a
+sleeping speaker can take seconds to answer), so the adapter waits for
+Spotify's own picker to move the row into the current-device slot instead of
+deciding after ~2.5s. If the handshake is still unresolved when the wait
+expires, the row keeps its spinner and the sheet says "Still connecting to
+X…" — never "Couldn't switch" for something that then succeeds. The list
+itself is the verdict: the moment that device shows up as current the
+spinner and the notice clear (deadline: 15s, after which the sheet admits it
+couldn't switch). Rows Spotify already flags (an "Unavailable"-style status
+line) are not given that grace — they fail fast, since Spotify has already
+told us they cannot answer. Spotify's own panel is never closed while a
+handshake is in flight, because that used to race the transfer.
+
+Loading, empty and error states are distinct: a spinner while the first read
+is in flight, a retry button when the picker refuses to open, and an honest
+notice when a background refresh fails but a stale list is still shown.
+
+Refresh is deliberately unaggressive: opening paints Spotify's last-known
+list instantly and reads fresh once; while the sheet is visible a time-gated
+beat re-reads every 5s, and an unchanged list repaints nothing (scroll and
+focus stay put). No polling loop of our own.
+
+Device API (all Spotify DOM access stays in the adapter):
+
+```js
+SpotMobile.spotify.getDevices()        // fresh read (2.5s cache, single-flight)
+SpotMobile.spotify.getCachedDevices()  // last known list, no Spotify round-trip
+SpotMobile.spotify.refreshDevices()    // force a fresh read
+SpotMobile.spotify.getDevicesState()   // { ok, reason, empty, updatedAt, pickerOpen }
+SpotMobile.spotify.selectDevice(dev)   // real transfer -> { ok, reason?, devices }
+SpotMobile.spotify.inspectDevices()    // diagnostics: parsed rows + cache/picker state
+```
+
+Diagnostic (devtools on the Spotify tab):
+
+```js
+SpotMobile.spotify.inspectDevices()
+```
+
+A dependency-free fake-Spotify harness lives in `tests/` (dev only, never
+packaged): `node tests/serve.js` then open
+`http://127.0.0.1:8787/tests/harness.html`. It loads the real extension
+files unmodified, watches for the native panel ever becoming visible behind
+the sheet, and reports picker opens / transfers / violations live.
+
 ## Mobile scaling: measured, not hardcoded
 
 On phones (Quetta Android) Spotify serves its DESKTOP layout in a wide
@@ -230,6 +331,14 @@ glass (~360–430 CSS px) — a fixed 380px card would render tiny, and the
   visible/glass width) instead of relying on the layout-viewport media
   query; the query is kept for desktop narrow windows. Recomputed on
   `resize`, `orientationchange`, and `visualViewport.resize`.
+- The environment is treated as a property of the GLASS, not of the moment.
+  Spotify's own Connect panel shifts the layout for a frame or two while the
+  adapter reads it, and re-deriving `--spm-zoom` from such a reading used to
+  shrink and grow the whole UI mid-connection. So: resize bursts are
+  debounced (140ms), the environment is frozen while our sheet is open (and
+  re-read when it closes), and a new zoom is only adopted when two
+  consecutive readings agree on it and it differs by ≥0.12 — a real rotation
+  still lands, a transient panel never does.
 
 Phone debugging via `chrome://inspect`:
 
@@ -260,9 +369,11 @@ only does real work while the player is missing. No aggressive polling.
   lookups (locale-independent) cover the main controls anyway.
 - Logged-out / ad states: `getSnapshot().playerReady === false`, UI shows
   "Waiting for the Spotify player…".
-- Lyrics / Queue / Devices click Spotify's real side buttons; if Spotify has no
-  such control in the current state the call returns `false` and the UI shows a
-  status hint instead of inventing behaviour.
+- Lyrics / Queue click Spotify's real side buttons; if Spotify has no such
+  control in the current state the call returns `false` and the UI shows a
+  status hint instead of inventing behaviour. Devices no longer opens that
+  picker — see "Devices: custom sheet" above (`openDevices()` remains for
+  compatibility/diagnostics).
 - Volume slider scale (0..1 vs 0..100) is auto-detected; exotic builds fall back
   to the mute button.
 

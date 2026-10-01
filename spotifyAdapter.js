@@ -54,6 +54,22 @@
     seek: ["seek", "progress", "progreso", "position"],
   };
 
+  // Device picker (Spotify Connect). Verified against the shipped
+  // web-player bundle rather than guessed — see the devices section below.
+  var DEVICE = {
+    row: "device-picker-row-sidepanel",
+    rowTitle: "list-row-title",
+    mainIcon: "main-icon",
+    currentIcon: "device-icon",
+    listPrefix: "devices-list-",
+    emptyHeading: "device-picker-section-heading",
+    emptyList: "device-picker-troubleshooting-list",
+    panelId: "Desktop_PanelContainer_Id",
+    panelClose: "PanelHeader_CloseButton",
+    currentKey: "device-picker-header",
+    castPlaceholder: "cast-placeholder",
+  };
+
   var subscribers = new Set();
   var lastSnapshotKey = "";
   var observer = null;
@@ -1725,6 +1741,618 @@
     };
   }
 
+  /* ---------- Devices (Spotify Connect) ----------
+   *
+   * The device list is REAL Spotify Connect state. Spotify keeps it in a
+   * panel/popover it renders on demand, so the adapter opens that picker
+   * only to read it (and to click a row), and keeps it hidden the whole
+   * time so the user never sees a desktop popover behind our own sheet.
+   *
+   * Markup contract (taken from Spotify's own web-player bundle, not
+   * guessed; generated class names are never used):
+   *   row:      [data-testid="device-picker-row-sidepanel"]
+   *             role="group" aria-labelledby="listrow-title-<deviceId>"
+   *   title:    [data-testid="list-row-title"] id="listrow-title-<deviceId>"
+   *   subtitle: id="listrow-subtitle-<deviceId>"   (real status text, may be empty)
+   *   icon:     [data-testid="main-icon"]          (one icon per device type)
+   *             [data-testid="device-icon"]        (current-device row)
+   *   list:     [data-testid^="devices-list-"]
+   *   current:  the row whose aria-labelledby ends in "device-picker-header";
+   *             the list below it contains only NON-active devices.
+   *   click:    the transfer handler lives on the <li role="listitem"> that
+   *             wraps the row (the row's own onClick is a no-op), so a click
+   *             dispatched on the row bubbles into Spotify's real transfer.
+   *   empty:    [data-testid="device-picker-section-heading"] ("No other
+   *             devices found") + [data-testid="device-picker-troubleshooting-list"]
+   *   panel:    <aside id="Desktop_PanelContainer_Id"> with a
+   *             [data-testid="PanelHeader_CloseButton"] close button.
+   */
+
+  var deviceCache = { devices: [], at: 0, ok: false, reason: "", empty: false };
+  var deviceBusy = null;
+  // How long a device transfer is given to hand off before the UI is told the
+  // outcome is unresolved (a sleeping speaker can take seconds to answer).
+  // A row Spotify already flags with a status line gets much less rope.
+  var TRANSFER_WAIT_MS = 6500;
+  var TRANSFER_FLAGGED_WAIT_MS = 3000;
+  var deviceHidden = null; // { el, prev, prevPriority } while the picker is kept invisible
+
+  function waitFor(fn, timeoutMs, intervalMs) {
+    return new Promise(function (resolve) {
+      var limit = timeoutMs || 1500;
+      var every = intervalMs || 60;
+      var t0 = Date.now();
+      function poll() {
+        var v = null;
+        try {
+          v = fn();
+        } catch (e) {
+          v = null;
+        }
+        if (v) {
+          resolve(v);
+          return;
+        }
+        if (Date.now() - t0 >= limit) {
+          resolve(null);
+          return;
+        }
+        setTimeout(poll, every);
+      }
+      poll();
+    });
+  }
+
+  function deviceRows() {
+    var out = [];
+    try {
+      out = Array.prototype.slice.call(
+        document.querySelectorAll('[data-testid="' + DEVICE.row + '"]')
+      );
+    } catch (e) {
+      out = [];
+    }
+    return out;
+  }
+
+  // Laid out / rendered. Deliberately ignores `visibility` — the adapter hides
+  // the picker exactly that way while it works, and it must still count as
+  // "showing" so the open/close bookkeeping stays honest.
+  function isShown(el) {
+    if (!el || !el.getClientRects) return false;
+    try {
+      if (!el.getClientRects().length) return false;
+      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
+      if (cs && cs.display === "none") return false;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Every picker row carries the device id in its aria-labelledby/title id.
+  function rowKey(row) {
+    if (!row) return "";
+    try {
+      var label = row.getAttribute("aria-labelledby") || "";
+      var m = label.match(/listrow-title-(.+)$/);
+      if (m) return m[1].trim();
+      var title = row.querySelector('[data-testid="' + DEVICE.rowTitle + '"]');
+      if (title && title.id && title.id.indexOf("listrow-title-") === 0) {
+        return title.id.slice("listrow-title-".length);
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  function rowText(row, key, kind) {
+    if (!row) return "";
+    try {
+      if (kind === "title") {
+        var t = row.querySelector('[data-testid="' + DEVICE.rowTitle + '"]');
+        if (t) return (t.textContent || "").trim();
+      }
+      var el =
+        (key ? row.querySelector('[id="listrow-' + kind + '-' + key + '"]') : null) ||
+        row.querySelector('[id^="listrow-' + kind + '-"]');
+      if (el) return (el.textContent || "").trim();
+    } catch (e) {}
+    return "";
+  }
+
+  function safeSvg(svg) {
+    if (!svg || svg.tagName.toLowerCase() !== "svg") return "";
+    try {
+      var clone = svg.cloneNode(true);
+      var nodes = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll("*")));
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var attrs = Array.prototype.slice.call(node.attributes || []);
+        for (var a = 0; a < attrs.length; a++) {
+          var name = attrs[a].name || "";
+          if (name === "class" || name === "style" || name.indexOf("on") === 0) {
+            node.removeAttribute(attrs[a].name);
+          }
+        }
+      }
+      var markup = clone.outerHTML || "";
+      if (/<script/i.test(markup)) return "";
+      return markup.length > 4000 ? "" : markup;
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function rowIcon(row, isCurrent) {
+    if (!row) return "";
+    try {
+      var tid = isCurrent ? DEVICE.currentIcon : DEVICE.mainIcon;
+      var host = row.querySelector('[data-testid="' + tid + '"]');
+      var svg =
+        (host && (host.tagName.toLowerCase() === "svg" ? host : host.querySelector("svg"))) ||
+        row.querySelector("svg");
+      return safeSvg(svg);
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function parseDeviceRow(row) {
+    var key = rowKey(row);
+    var isCurrent = key === DEVICE.currentKey || /-device-picker-header$/.test(key);
+    var name = rowText(row, key, "title");
+    var subtitle = rowText(row, key, "subtitle");
+    return {
+      // The current-device row has no real device id (its key is the panel
+      // header id); the others expose the Connect device id.
+      id: isCurrent ? "" : key,
+      key: key,
+      name: name,
+      subtitle: subtitle,
+      type: "",
+      isActive: isCurrent,
+      icon: rowIcon(row, isCurrent),
+    };
+  }
+
+  function deviceListScope() {
+    var scopes = [];
+    try {
+      scopes = Array.prototype.slice.call(
+        document.querySelectorAll('[data-testid^="' + DEVICE.listPrefix + '"]')
+      );
+    } catch (e) {
+      scopes = [];
+    }
+    return scopes;
+  }
+
+  // Normalized read of whatever Spotify has rendered right now. Never opens
+  // anything: callers decide whether the picker needs to be opened first.
+  function readDevices() {
+    var rows = deviceRows();
+    var lists = deviceListScope();
+    var current = null;
+    var rest = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var key = rowKey(row);
+      if (!key || key === DEVICE.castPlaceholder) continue;
+      if (lists.length) {
+        // Ignore look-alike rows outside the picker's own list containers.
+        var inList = false;
+        for (var l = 0; l < lists.length; l++) {
+          if (lists[l].contains(row)) {
+            inList = true;
+            break;
+          }
+        }
+        if (!inList && key !== DEVICE.currentKey && !/-device-picker-header$/.test(key)) continue;
+      }
+      var device = parseDeviceRow(row);
+      if (!device.name && !device.id) continue;
+      if (device.isActive) {
+        if (!current) current = device;
+        continue;
+      }
+      rest.push(device);
+    }
+    // Spotify mounts the "No other devices found" heading only when the list
+    // is empty, so a rendered heading is the real empty state.
+    var empty = false;
+    try {
+      empty = isShown(document.querySelector('[data-testid="' + DEVICE.emptyHeading + '"]'));
+    } catch (e) {
+      empty = false;
+    }
+    return { devices: current ? [current].concat(rest) : rest, current: current, empty: empty };
+  }
+
+  // Is Spotify's picker actually rendered right now? (Rows only exist while
+  // it is mounted, and a leftover container that is display:none is not open.)
+  function pickerIsOpen() {
+    var rows = deviceRows();
+    if (!rows.length) return false;
+    var root = devicePickerRoot(rows);
+    if (!root) return true;
+    return isShown(root);
+  }
+
+  function devicePickerRoot(rows) {
+    try {
+      var panel = document.getElementById(DEVICE.panelId);
+      var all = rows && rows.length ? rows : deviceRows();
+      if (panel && all.length) {
+        var inside = true;
+        for (var i = 0; i < all.length; i++) {
+          if (!panel.contains(all[i])) {
+            inside = false;
+            break;
+          }
+        }
+        if (inside) return panel;
+      }
+      for (var r = 0; r < all.length; r++) {
+        var el = all[r].parentElement;
+        while (el && el !== document.body) {
+          var tagged =
+            (el.querySelector &&
+              (el.querySelector('[data-testid^="' + DEVICE.listPrefix + '"]') ||
+                el.querySelector('[data-testid="' + DEVICE.emptyHeading + '"]'))) ||
+            false;
+          if (tagged) return el;
+          el = el.parentElement;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function hidePicker(root) {
+    if (!root || deviceHidden) return;
+    try {
+      deviceHidden = {
+        el: root,
+        prev: root.style.getPropertyValue("visibility"),
+        prevPriority: root.style.getPropertyPriority("visibility"),
+      };
+      root.style.setProperty("visibility", "hidden", "important");
+    } catch (e) {
+      deviceHidden = null;
+    }
+  }
+
+  // While we open Spotify's picker ourselves, a temporary stylesheet rule keeps
+  // the whole panel invisible from its very first paint. The inline hide above
+  // only lands after the open is detected (a 60ms poll), which is a visible
+  // frame too late; the veil closes that gap. It is removed as soon as the
+  // inline hide is in place, and again (safety net) whenever the picker is
+  // shown or closed — so it can never outlive our own open cycle and start
+  // hiding a picker the user opens themselves later.
+  var deviceVeil = null;
+
+  function veilStart() {
+    if (deviceVeil) return;
+    try {
+      var style = document.createElement("style");
+      style.setAttribute("data-spm", "device-veil");
+      style.textContent = "#" + DEVICE.panelId + "{visibility:hidden !important}";
+      (document.head || document.documentElement).appendChild(style);
+      deviceVeil = style;
+    } catch (e) {
+      deviceVeil = null;
+    }
+  }
+
+  function veilStop() {
+    if (!deviceVeil) return;
+    try {
+      if (deviceVeil.parentNode) deviceVeil.parentNode.removeChild(deviceVeil);
+    } catch (e) {}
+    deviceVeil = null;
+  }
+
+  function showPicker() {
+    veilStop();
+    if (!deviceHidden) return;
+    try {
+      var el = deviceHidden.el;
+      if (deviceHidden.prev) {
+        el.style.setProperty("visibility", deviceHidden.prev, deviceHidden.prevPriority || "");
+      } else {
+        el.style.removeProperty("visibility");
+      }
+    } catch (e) {}
+    deviceHidden = null;
+  }
+
+  function openNativePicker() {
+    if (pickerIsOpen()) {
+      hidePicker(devicePickerRoot(null));
+      veilStop();
+      return Promise.resolve({ ok: true, opened: false });
+    }
+    var btn = findSideButton("device");
+    if (!btn) return Promise.resolve({ ok: false, opened: false });
+    veilStart();
+    click(btn);
+    return waitFor(function () {
+      return pickerIsOpen() ? true : null;
+    }, 1800, 60).then(function (found) {
+      if (!found) {
+        // Gone before first paint, or never showed: drop the veil so a real
+        // picker the user opens later is never held invisible.
+        veilStop();
+        return { ok: false, opened: true };
+      }
+      hidePicker(devicePickerRoot(null));
+      veilStop();
+      return { ok: true, opened: true };
+    });
+  }
+
+  function closeNativePicker() {
+    if (!pickerIsOpen()) {
+      showPicker();
+      return Promise.resolve(true);
+    }
+    var btn = findSideButton("device");
+    if (btn) click(btn); // the connect button toggles Spotify's own picker
+    return waitFor(function () {
+      return pickerIsOpen() ? null : true;
+    }, 1400, 60).then(function (closed) {
+      if (closed) {
+        showPicker();
+        return true;
+      }
+      var fallback = null;
+      try {
+        fallback = document.querySelector('[data-testid="' + DEVICE.panelClose + '"]');
+      } catch (e) {
+        fallback = null;
+      }
+      if (!fallback) {
+        showPicker();
+        return false;
+      }
+      click(fallback);
+      return waitFor(function () {
+        return pickerIsOpen() ? null : true;
+      }, 900, 60).then(function (closed2) {
+        showPicker();
+        return !!closed2;
+      });
+    });
+  }
+
+  function readDevicesFresh() {
+    var wasOpen = pickerIsOpen();
+    return openNativePicker()
+      .then(function (state) {
+        if (!state.ok) {
+          deviceCache.ok = false;
+          deviceCache.reason = "picker-unavailable";
+          return null;
+        }
+        var read = readDevices();
+        // The picker can close under us — Spotify itself closes it the moment a
+        // transfer completes. A zero-row read then means "the panel is gone",
+        // not "there are no devices", so it must never clobber a good list
+        // (that used to flash the sheet's empty state right after a switch).
+        if (!read.devices.length && deviceCache.devices.length && !pickerIsOpen()) {
+          // Keep the last good list, but refresh its timestamp so it counts as
+          // current rather than expiring into a retry storm.
+          deviceCache.at = Date.now();
+          deviceCache.ok = true;
+          deviceCache.reason = "";
+          deviceCache.empty = false;
+        } else {
+          deviceCache = {
+            devices: read.devices,
+            at: Date.now(),
+            ok: true,
+            reason: "",
+            empty: read.empty || read.devices.length === 0,
+          };
+        }
+        // Only close what we opened: a picker the user opened themselves stays.
+        return (wasOpen || !state.opened ? Promise.resolve(true) : closeNativePicker()).then(function () {
+          return deviceCache.devices;
+        });
+      })
+      .catch(function () {
+        deviceCache.ok = false;
+        deviceCache.reason = "read-failed";
+        return null;
+      });
+  }
+
+  function getDevices(opts) {
+    opts = opts || {};
+    var maxAge = typeof opts.maxAge === "number" ? opts.maxAge : 2500;
+    if (opts.cached || (!opts.fresh && deviceCache.at && Date.now() - deviceCache.at < maxAge)) {
+      return Promise.resolve(deviceCache.devices);
+    }
+    if (deviceBusy) return deviceBusy;
+    deviceBusy = readDevicesFresh().then(function (list) {
+      deviceBusy = null;
+      return list || deviceCache.devices;
+    });
+    return deviceBusy;
+  }
+
+  function getDevicesState() {
+    return {
+      devices: deviceCache.devices,
+      ok: deviceCache.ok,
+      reason: deviceCache.reason,
+      empty: deviceCache.empty,
+      updatedAt: deviceCache.at,
+      pickerOpen: pickerIsOpen(),
+    };
+  }
+
+  function getActiveDevice() {
+    return getDevices().then(function (list) {
+      for (var i = 0; i < (list || []).length; i++) {
+        if (list[i].isActive) return list[i];
+      }
+      return null;
+    });
+  }
+
+  function transferRow(row) {
+    if (!row) return false;
+    var target = row;
+    try {
+      var li = row.closest ? row.closest('li[role="listitem"]') : null;
+      if (li) target = li;
+    } catch (e) {}
+    try {
+      target.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 })
+      );
+    } catch (e) {}
+    return click(target);
+  }
+
+  function rowGone(key, name) {
+    var rows = deviceRows();
+    for (var i = 0; i < rows.length; i++) {
+      var rowKeyNow = rowKey(rows[i]);
+      var isCurrent =
+        rowKeyNow === DEVICE.currentKey || /-device-picker-header$/.test(rowKeyNow);
+      if (isCurrent) continue;
+      if ((key && rowKeyNow === key) || (!key && name && rowText(rows[i], rowKeyNow, "title") === name)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Real switch: click Spotify's own row (its <li> carries the transfer
+  // handler) and only report success once Spotify's picker actually shows
+  // that device as the current one. Nothing is faked locally.
+  function selectDevice(device) {
+    var id = typeof device === "string" ? device : device && device.id;
+    var name = device && device.name ? device.name : "";
+    var key = device && device.key ? device.key : id;
+    return openNativePicker().then(function (state) {
+      if (!state.ok) return { ok: false, reason: "picker-unavailable" };
+      var rows = deviceRows();
+      var target = null;
+      var targetName = name;
+      for (var i = 0; i < rows.length; i++) {
+        var k = rowKey(rows[i]);
+        var isCurrent = k === DEVICE.currentKey || /-device-picker-header$/.test(k);
+        if (isCurrent) continue;
+        if ((key && k === key) || (!key && name && rowText(rows[i], k, "title") === name)) {
+          target = rows[i];
+          targetName = rowText(rows[i], k, "title") || name;
+          break;
+        }
+      }
+      if (!target) {
+        return closeNativePicker().then(function () {
+          return { ok: false, reason: "device-gone" };
+        });
+      }
+      var clickedKey = rowKey(target);
+      // Spotify already flags devices it considers unreachable with a status
+      // line ("Unavailable", …). A row without one looks ready to answer, so a
+      // silent handshake on it deserves a long wait; a flagged row does not.
+      var flagged = !!rowText(target, clickedKey, "subtitle");
+      transferRow(target);
+      // A real Connect handshake is not instant: a sleeping speaker or phone
+      // can take several seconds to answer. The row leaving the list (Spotify
+      // keeps only non-active devices there) is the success signal, but giving
+      // it only ~2.5s is what produced "Couldn't switch to …" notices while the
+      // transfer quietly finished a moment later. So: wait much longer, and do
+      // NOT close the panel while it is in flight — closing it mid-handshake
+      // is exactly how that race used to start.
+      return waitFor(function () {
+        return rowGone(clickedKey, targetName) ? true : null;
+      }, flagged ? TRANSFER_FLAGGED_WAIT_MS : TRANSFER_WAIT_MS, 120)
+        .then(function (confirmed) {
+          // Only close what we opened, and only once the handshake settled;
+          // on a timeout the panel is left as Spotify's own state already has
+          // it and the next refresh resolves the outcome.
+          var settled = confirmed ? closeNativePicker() : Promise.resolve(true);
+          return settled
+            .then(function () {
+              return getDevices({ fresh: true });
+            })
+            .then(function (list) {
+              return { confirmed: !!confirmed, list: list || [] };
+            });
+        })
+        .then(function (res) {
+          var list = res.list;
+          var active = null;
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].isActive) active = list[i];
+          }
+          var ok = !!(
+            active &&
+            ((clickedKey && active.key === clickedKey) ||
+              (targetName && active.name === targetName))
+          );
+          if (ok) return { ok: true, device: active, devices: list, reason: "" };
+          // Never report a hard failure for a handshake we simply ran out of
+          // time on: "unconfirmed" lets the UI stay honest (still connecting)
+          // and lets the next refresh settle it either way. A row Spotify was
+          // already flagging is a rejection instead, so the UI can say so at
+          // once rather than spinning.
+          var unresolved = !res.confirmed && !flagged;
+          return {
+            ok: false,
+            device: null,
+            devices: list,
+            reason: unresolved ? "unconfirmed" : "rejected",
+          };
+        });
+    });
+  }
+
+  // Diagnostics for the picker layer: run it on a live Spotify tab to see
+  // exactly what the adapter can see (used when Spotify ships a new build).
+  // `SpotMobile.spotify.inspectDevices()`
+  function getDeviceDiagnostics() {
+    var btn = null;
+    try {
+      btn = findSideButton("device");
+    } catch (e) {
+      btn = null;
+    }
+    var rows = deviceRows();
+    return {
+      connectButton: btn
+        ? {
+            testid: btn.getAttribute("data-testid"),
+            label: btn.getAttribute("aria-label"),
+            text: (btn.textContent || "").trim().slice(0, 60),
+          }
+        : null,
+      pickerOpen: pickerIsOpen(),
+      panel: !!document.getElementById(DEVICE.panelId),
+      lists: deviceListScope().map(function (el) {
+        return el.getAttribute("data-testid");
+      }),
+      emptyHeading: isShown(document.querySelector('[data-testid="' + DEVICE.emptyHeading + '"]')),
+      rows: rows.map(function (row) {
+        var key = rowKey(row);
+        return {
+          key: key,
+          title: rowText(row, key, "title"),
+          subtitle: rowText(row, key, "subtitle"),
+          inList: !!(row.closest && row.closest('[data-testid^="' + DEVICE.listPrefix + '"]')),
+          hasIcon: !!row.querySelector('[data-testid="' + DEVICE.mainIcon + '"]'),
+        };
+      }),
+      cached: getDevicesState(),
+    };
+  }
+
   /* ---------- Change notification ---------- */
 
   function snapshotKey(s) {
@@ -1928,9 +2556,28 @@
     openQueue: function () {
       return click(findSideButton("queue"));
     },
+    // Spotify's own picker. Kept for compatibility/diagnostics — the custom
+    // sheet uses the device API below, which drives the same picker for real.
     openDevices: function () {
       return click(findSideButton("device"));
     },
+    closeDevices: function () {
+      return closeNativePicker();
+    },
+    isDevicePickerOpen: pickerIsOpen,
+
+    // Devices: real Spotify Connect state, normalized for the UI.
+    getDevices: getDevices,
+    getCachedDevices: function () {
+      return deviceCache.devices.slice();
+    },
+    getDevicesState: getDevicesState,
+    getActiveDevice: getActiveDevice,
+    selectDevice: selectDevice,
+    refreshDevices: function () {
+      return getDevices({ fresh: true });
+    },
+    inspectDevices: getDeviceDiagnostics,
 
     // Opens the playing-from context the Spotify way: by clicking Spotify's
     // own header link (inside its React tree), so its router handles it as

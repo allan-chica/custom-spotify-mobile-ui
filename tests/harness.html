@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPM harness — Spotify devices picker</title>
+    <link rel="stylesheet" href="../style.css" />
+    <style>
+      /* Stand-in for Spotify's own page chrome (never touched by the UI). */
+      html,
+      body {
+        margin: 0;
+        background: #000;
+        color: #fff;
+        font-family: system-ui, sans-serif;
+      }
+      #fake-page {
+        min-height: 100vh;
+        padding: 24px;
+      }
+      #fake-page h1 {
+        font-size: 20px;
+        color: #b3b3b3;
+      }
+      #fake-player {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 72px;
+        background: #181818;
+        border-top: 1px solid #282828;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 16px;
+        color: #b3b3b3;
+      }
+      #fake-player button {
+        background: none;
+        border: 0;
+        color: #b3b3b3;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      /* Spotify's device picker panel (hidden until the connect button opens it). */
+      #Desktop_PanelContainer_Id {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 72px;
+        width: 340px;
+        background: #121212;
+        border-left: 1px solid #282828;
+        display: none;
+        padding: 12px;
+        overflow: auto;
+      }
+      #Desktop_PanelContainer_Id li[role="listitem"],
+      #Desktop_PanelContainer_Id div[data-testid="device-picker-row-sidepanel"] {
+        list-style: none;
+      }
+      #Desktop_PanelContainer_Id div[data-testid="device-picker-row-sidepanel"] {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border-radius: 6px;
+      }
+      #Desktop_PanelContainer_Id div[role="group"] {
+        margin: 0;
+      }
+      #Desktop_PanelContainer_Id ul {
+        margin: 0;
+        padding: 0;
+      }
+      #Desktop_PanelContainer_Id .legacy-list-row__on-click {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 auto;
+        cursor: pointer;
+      }
+      #fake-player [data-testid="now-playing-widget"] {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 180px;
+      }
+      #harness-log {
+        font: 11px/1.5 ui-monospace, monospace;
+        color: #9be29b;
+        white-space: pre-wrap;
+        max-width: 720px;
+      }
+      .h-status {
+        color: #f0d68a;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="fake-page">
+      <h1>Fake Spotify page (harness)</h1>
+      <p class="h-status" id="harness-state"></p>
+      <div id="harness-log"></div>
+    </div>
+
+    <!-- ===== Stand-in for Spotify's player bar + Connect picker ===== -->
+    <footer id="fake-player" data-testid="now-playing-bar">
+      <div data-testid="now-playing-widget">
+        <img data-testid="cover-art-image" alt="" width="40" height="40" id="np-cover" />
+        <div>
+          <a data-testid="context-item-link" href="/track/harness">Harness Track</a>
+          <button data-testid="add-button" aria-label="Add to Liked Songs">♡</button>
+        </div>
+      </div>
+      <button data-testid="control-button-shuffle" aria-label="Enable shuffle">shuffle</button>
+      <button data-testid="control-button-skip-back" aria-label="Previous">prev</button>
+      <button id="np-toggle" data-testid="control-button-playpause" aria-label="Play">play</button>
+      <button data-testid="control-button-skip-forward" aria-label="Next">next</button>
+      <button data-testid="control-button-repeat" aria-label="Enable repeat">repeat</button>
+      <div data-testid="playback-progressbar">
+        <input id="np-progress" type="range" min="0" max="200000" value="0" />
+      </div>
+      <div data-testid="volume-bar"><input id="np-volume" type="range" min="0" max="100" value="80" /></div>
+      <!-- The real button that opens Spotify's own device picker. -->
+      <button id="connect-button" aria-label="Connect to a device">Connect to a device</button>
+    </footer>
+
+    <aside id="Desktop_PanelContainer_Id" aria-label="Connect" tabindex="-1">
+      <div class="panel-header">
+        <span>Connect</span>
+        <div data-testid="PanelHeader_CloseButton">
+          <button id="panel-close" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div role="group" class="current-device-group" data-bottom-row="jam-info" aria-label="Current device">
+        <div
+          id="current-row"
+          role="group"
+          aria-labelledby="listrow-title-device-picker-header"
+          data-testid="device-picker-row-sidepanel"
+        >
+          <div class="legacy-list-row__on-click legacy-list-row__row-button" role="button" tabindex="0">
+            <svg data-testid="device-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16">
+              <path d="M0 0h16v16H0z" fill="none" stroke="currentColor" />
+            </svg>
+            <span data-testid="list-row-title" id="listrow-title-device-picker-header"></span>
+          </div>
+        </div>
+      </div>
+      <ul role="list" id="device-list" data-testid="devices-list-" aria-labelledby="device-picker-section-heading "></ul>
+      <span id="device-picker-section-heading" data-testid="device-picker-section-heading" hidden>No other devices found</span>
+      <div id="device-picker-troubleshooting-list" data-testid="device-picker-troubleshooting-list" hidden>
+        <ul>
+          <li>Check your WiFi</li>
+        </ul>
+      </div>
+    </aside>
+
+    <script>
+      /* ---------------- fake Spotify behaviour ---------------- */
+      (function () {
+        var ICONS = {
+          computer:
+            '<svg data-testid="main-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16"><path d="M1 2h14v9H1z" fill="none" stroke="currentColor"/></svg>',
+          tv: '<svg data-testid="main-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="9" fill="none" stroke="currentColor"/></svg>',
+          smartphone:
+            '<svg data-testid="main-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16"><rect x="4" y="1" width="8" height="14" fill="none" stroke="currentColor"/></svg>',
+          speaker:
+            '<svg data-testid="main-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor"/></svg>',
+        };
+
+        var MODE = "ok"; // ok | empty | error | slow | slowtransfer | veryslowtransfer
+        var current = { key: "device-picker-header", name: "This web browser", icon: ICONS.computer };
+        var devices = [
+          { key: "dev-tv", name: "Living Room TV", subtitle: "", icon: ICONS.tv, fail: false },
+          { key: "dev-pc", name: "Aladdin's PC", subtitle: "", icon: ICONS.computer, fail: false },
+          { key: "dev-phone", name: "Android Phone", subtitle: "", icon: ICONS.smartphone, fail: false },
+          { key: "dev-speaker", name: "Bathroom speaker", subtitle: "Unavailable", icon: ICONS.speaker, fail: true },
+        ];
+
+        var panel = document.getElementById("Desktop_PanelContainer_Id");
+        var list = document.getElementById("device-list");
+        var currentRow = document.getElementById("current-row");
+        var currentTitle = currentRow.querySelector("[data-testid='list-row-title']");
+        var emptyHeading = document.getElementById("device-picker-section-heading");
+        var troubleshooting = document.getElementById("device-picker-troubleshooting-list");
+        var connect = document.getElementById("connect-button");
+        var stateEl = document.getElementById("harness-state");
+        var logEl = document.getElementById("harness-log");
+
+        var log = [];
+        var transfers = [];
+        var violations = 0; // times the native panel was visible while our sheet was open
+        var pickerOpens = 0;
+
+        function logLine(text) {
+          log.push(text);
+          logEl.textContent = log.slice(-14).join("\n");
+        }
+
+        function visible(el) {
+          if (!el || !el.getBoundingClientRect) return false;
+          if (!el.getClientRects().length) return false;
+          var r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) return false;
+          var cs = getComputedStyle(el);
+          return cs.visibility !== "hidden" && cs.display !== "none" && cs.opacity !== "0";
+        }
+
+        // The current device lives in the panel header, never in the list. When
+        // another device becomes current, the one we leave rejoins the list —
+        // exactly what Spotify's panel shows, so the rows never duplicate the
+        // current device.
+        function demoteCurrent() {
+          if (!current || !current.name) return;
+          for (var i = 0; i < devices.length; i++) {
+            if (devices[i].name === current.name) return;
+          }
+          devices.push({
+            key: current.name === "This web browser" ? "dev-web" : "dev-was-" + current.name,
+            name: current.name,
+            subtitle: current.subtitle || "",
+            icon: current.icon,
+          });
+        }
+
+        function rowFor(device) {
+          var li = document.createElement("li");
+          li.setAttribute("role", "listitem");
+          var row = document.createElement("div");
+          row.setAttribute("role", "group");
+          row.setAttribute("data-testid", "device-picker-row-sidepanel");
+          row.setAttribute("aria-labelledby", "listrow-title-" + device.key);
+          var click = document.createElement("div");
+          click.className = "legacy-list-row__on-click legacy-list-row__row-button";
+          click.setAttribute("role", "button");
+          click.setAttribute("tabindex", "0");
+          click.setAttribute("aria-labelledby", "listrow-title-" + device.key + " listrow-subtitle-" + device.key);
+          click.setAttribute("aria-describedby", "onClickHint" + device.key);
+          var icon = document.createElement("span");
+          icon.innerHTML = device.icon;
+          var text = document.createElement("span");
+          var title = document.createElement("span");
+          title.setAttribute("data-testid", "list-row-title");
+          title.id = "listrow-title-" + device.key;
+          title.textContent = device.name;
+          text.appendChild(title);
+          if (device.subtitle) {
+            var sub = document.createElement("span");
+            sub.id = "listrow-subtitle-" + device.key;
+            sub.textContent = device.subtitle;
+            text.appendChild(sub);
+          }
+          click.appendChild(icon.firstChild);
+          click.appendChild(text);
+          row.appendChild(click);
+          li.appendChild(row);
+          // Spotify attaches the transfer handler to the wrapping <li>.
+          li.addEventListener("click", function () {
+            onSelect(device);
+          });
+          return li;
+        }
+
+        function render() {
+          list.innerHTML = "";
+          emptyHeading.hidden = true;
+          troubleshooting.hidden = true;
+          if (MODE === "empty") {
+            emptyHeading.hidden = false;
+            troubleshooting.hidden = false;
+            currentTitle.textContent = current.name;
+            return;
+          }
+          currentTitle.textContent = current.name;
+          devices.forEach(function (d) {
+            list.appendChild(rowFor(d));
+          });
+          if (!devices.length) {
+            emptyHeading.hidden = false;
+          }
+        }
+
+        function openPanel() {
+          pickerOpens++;
+          panel.style.display = "block";
+          render();
+          logLine("[spotify] picker opened");
+        }
+
+        function closePanel() {
+          panel.style.display = "none";
+          // Spotify unmounts the picker contents when it closes.
+          list.innerHTML = "";
+          currentTitle.textContent = "";
+          logLine("[spotify] picker closed");
+        }
+
+        function onSelect(device) {
+          transfers.push(device.name);
+          logLine("[spotify] row clicked: " + device.name);
+          if (device.fail) {
+            // Spotify rejects the transfer: the row stays, nothing changes.
+            return;
+          }
+          // A real Connect handshake can take seconds when the target is a
+          // sleeping speaker/phone: slow modes model it (and the panel stays
+          // open, exactly like Spotify's during a handover).
+          var handshake = MODE === "veryslowtransfer" ? 8000 : MODE === "slowtransfer" ? 4200 : 180;
+          setTimeout(function () {
+            demoteCurrent();
+            current = {
+              key: "device-picker-header",
+              name: device.name,
+              icon: device.icon,
+              subtitle: device.subtitle || "",
+            };
+            for (var i = devices.length - 1; i >= 0; i--) {
+              if (devices[i].key === device.key) devices.splice(i, 1);
+            }
+            // Picking a device closes Spotify's own picker.
+            closePanel();
+            logLine("[spotify] transfer done -> " + device.name);
+          }, handshake);
+        }
+
+        connect.addEventListener("click", function () {
+          if (panel.style.display === "block") closePanel();
+          else if (MODE === "error") logLine("[spotify] picker refused to open");
+          else if (MODE === "slow") setTimeout(openPanel, 900);
+          else openPanel();
+        });
+        document.getElementById("panel-close").addEventListener("click", closePanel);
+
+        var playBtn = document.getElementById("np-toggle");
+        playBtn.addEventListener("click", function () {
+          var playing = playBtn.getAttribute("aria-label") === "Pause";
+          playBtn.setAttribute("aria-label", playing ? "Play" : "Pause");
+        });
+        document.getElementById("np-progress").addEventListener("input", function () {
+          logLine("[spotify] seek " + this.value);
+        });
+
+        function sheetShowing() {
+          var sheet = document.querySelector("#spm-root .spm-dsheet");
+          return !!sheet && !sheet.hidden;
+        }
+
+        setInterval(function () {
+          if (sheetShowing() && visible(panel)) {
+            violations++;
+            logLine("[violation] native picker visible while our sheet is open");
+          }
+          stateEl.textContent =
+            "mode=" + MODE +
+            " current=" + current.name +
+            " devices=" + devices.length +
+            " pickerOpens=" + pickerOpens +
+            " transfers=" + transfers.length +
+            " violations=" + violations;
+        }, 40);
+
+        window.harness = {
+          setMode: function (m) {
+            MODE = m;
+            logLine("[harness] mode=" + m);
+          },
+          getMode: function () {
+            return MODE;
+          },
+          devices: devices,
+          current: function () {
+            return current;
+          },
+          transfers: transfers,
+          pickerOpens: function () {
+            return pickerOpens;
+          },
+          violations: function () {
+            return violations;
+          },
+          logs: log,
+          addDevice: function (d) {
+            devices.push(d);
+            logLine("[harness] device added: " + d.name);
+            if (panel.style.display === "block") render();
+          },
+          setDevices: function (list) {
+            // In place, so the exposed `devices` reference stays valid.
+            devices.length = 0;
+            for (var i = 0; i < list.length; i++) devices.push(list[i]);
+            if (panel.style.display === "block") render();
+          },
+          externalSwitch: function (name, icon) {
+            var idx = -1;
+            for (var i = 0; i < devices.length; i++) {
+              if (devices[i].name === name) {
+                idx = i;
+                break;
+              }
+            }
+            var next = idx >= 0 ? devices.splice(idx, 1)[0] : { key: "dev-ext", name: name, icon: icon || current.icon };
+            demoteCurrent();
+            current = {
+              key: "device-picker-header",
+              name: next.name,
+              icon: next.icon,
+              subtitle: next.subtitle || "",
+            };
+            if (panel.style.display === "block") render();
+            logLine("[harness] external switch -> " + name);
+          },
+          panelOpen: function () {
+            return panel.style.display === "block";
+          },
+        };
+        // Nothing is rendered until the picker is opened — same as Spotify.
+      })();
+    </script>
+
+    <!-- The extension itself, unmodified. -->
+    <script src="../spotifyAdapter.js"></script>
+    <script src="../ui.js"></script>
+    <script src="../content.js"></script>
+  </body>
+</html>

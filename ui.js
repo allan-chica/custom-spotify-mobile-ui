@@ -32,6 +32,14 @@
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
     devices:
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
+    deviceRow:
+      '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
+    chevDown:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>',
+    check:
+      '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 12.5 10 17.5 19 7"/></svg>',
+    spinner:
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 019 9"/></svg>',
     chevLeft:
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg>',
     expand:
@@ -127,7 +135,23 @@
       '<button class="spm-mini-prev" type="button" aria-label="Previous">' + SVG.prev + "</button>" +
       '<button class="spm-mini-play" type="button" aria-label="Play">' + SVG.play + "</button>" +
       '<button class="spm-mini-next" type="button" aria-label="Next">' + SVG.next + "</button>" +
-      "</div>";
+      "</div>" +
+      // --- custom Devices bottom sheet (our own layer over the player) ---
+      '<div class="spm-dbackdrop" hidden></div>' +
+      '<section class="spm-dsheet" role="dialog" aria-modal="true" aria-labelledby="spm-dsheet-title" hidden>' +
+      '<div class="spm-dgrab"><span class="spm-dhandle" aria-hidden="true"></span></div>' +
+      '<header class="spm-dhead">' +
+      '<h3 class="spm-dtitle" id="spm-dsheet-title">Devices</h3>' +
+      '<button class="spm-circle spm-dclose" type="button" aria-label="Close devices">' +
+      SVG.chevDown +
+      "</button>" +
+      "</header>" +
+      '<div class="spm-dbody">' +
+      '<ul class="spm-dlist"></ul>' +
+      '<div class="spm-dstate" hidden></div>' +
+      "</div>" +
+      '<p class="spm-dnotice" role="status" hidden></p>' +
+      "</section>";
 
     // All queries below are scoped to our own container — never Spotify's DOM.
     var q = function (sel) {
@@ -173,6 +197,15 @@
     var lyricsBtn = q(".spm-lyrics-open");
     var queueBtn = q(".spm-queue");
     var devicesBtn = q(".spm-devices");
+    var sheetEl = q(".spm-dsheet");
+    var backdropEl = q(".spm-dbackdrop");
+    var grabEl = q(".spm-dgrab");
+    var sheetClose = q(".spm-dclose");
+    var sheetList = q(".spm-dlist");
+    var sheetState = q(".spm-dstate");
+    var sheetHead = q(".spm-dhead");
+    var sheetBody = q(".spm-dbody");
+    var sheetNotice = q(".spm-dnotice");
 
     var collapsed = false;
     var seeking = false;
@@ -181,6 +214,11 @@
     var rafId = 0;
     var currentArtwork = "";
     var envInfo = null;
+    var envApplyZoom = 0; // last zoom actually written to CSS
+    var envSample = null; // previous reading, for two-sample agreement
+    var envSampleAt = 0;
+    var envTimer = 0;
+    var sheetLoadTimer = 0;
     var transitionTimer = 0;
     var miniDrag = null;
     var miniSuppressClick = false;
@@ -202,7 +240,24 @@
      * layout-viewport media query (which never matches a desktop layout).
      * On desktop the factor is exactly 1 and the vars equal the viewport,
      * so desktop rendering is bit-identical to before. */
+    // The environment is a property of the GLASS, not of the moment. Spotify's
+    // own Connect panel (which the adapter opens behind the scenes to read the
+    // device list) shifts the layout for a frame or two; re-deriving `--spm-zoom`
+    // from such a reading is what made the whole UI shrink and grow again while
+    // the sheet was connecting. So: debounce resize bursts, never recompute
+    // while our sheet is open (it is re-applied on close), and only adopt a new
+    // zoom when two consecutive readings agree on it (with hysteresis against
+    // small wobbles).
+    function scheduleEnvironment() {
+      if (envTimer) window.clearTimeout(envTimer);
+      envTimer = window.setTimeout(function () {
+        envTimer = 0;
+        applyEnvironment();
+      }, 140);
+    }
+
     function applyEnvironment() {
+      if (sheetOpen) return; // frozen while the sheet is up
       var info = null;
       try {
         info = spotify.getViewportInfo();
@@ -222,8 +277,20 @@
         isFinite(vw) && vw > 0 && isFinite(vh) && vh > 0;
       envInfo = info;
       if (sane) {
+        var now = nowMs();
+        var agreed =
+          envSample !== null &&
+          now - envSampleAt >= 60 &&
+          Math.abs(envSample - zoom) < 0.1;
+        envSample = zoom;
+        envSampleAt = now;
+        if (!envApplyZoom) {
+          envApplyZoom = zoom; // first reading always applies
+        } else if (agreed && Math.abs(zoom - envApplyZoom) >= 0.12) {
+          envApplyZoom = zoom; // settled change (rotation): adopt it
+        }
         try {
-          root.style.setProperty("--spm-zoom", String(zoom));
+          root.style.setProperty("--spm-zoom", String(envApplyZoom));
           root.style.setProperty("--spm-vw", vw + "px");
           root.style.setProperty("--spm-vh", vh + "px");
         } catch (e) {}
@@ -233,10 +300,10 @@
 
     function watchEnvironment() {
       try {
-        window.addEventListener("resize", applyEnvironment, { passive: true });
-        window.addEventListener("orientationchange", applyEnvironment, { passive: true });
+        window.addEventListener("resize", scheduleEnvironment, { passive: true });
+        window.addEventListener("orientationchange", scheduleEnvironment, { passive: true });
         if (window.visualViewport && window.visualViewport.addEventListener) {
-          window.visualViewport.addEventListener("resize", applyEnvironment, { passive: true });
+          window.visualViewport.addEventListener("resize", scheduleEnvironment, { passive: true });
         }
       } catch (e) {}
     }
@@ -434,9 +501,7 @@
     queueBtn.addEventListener("click", function () {
       if (spotify.openQueue() === false) setStatus("Queue is not available right now.");
     });
-    devicesBtn.addEventListener("click", function () {
-      if (spotify.openDevices() === false) setStatus("Device picker is not available right now.");
-    });
+    // Devices now opens our own sheet (see the Devices sheet section above).
     muteBtn.addEventListener("click", function () {
       spotify.toggleMute();
     });
@@ -1413,6 +1478,644 @@
       mini.style.opacity = "";
     });
 
+    /* ---------- Custom Devices bottom sheet ----------
+     *
+     * Presentation layer only: every device fact (names, current device,
+     * selection) comes from the adapter, which owns ALL Spotify DOM work.
+     * The sheet is a sibling of the card and never touches player state, so
+     * closing it leaves the Now Playing screen exactly where it was.
+     *
+     * The adapter opens Spotify's own picker behind the scenes to read the
+     * device list and to click a row for a real transfer; that picker stays
+     * hidden for as long as it is needed, so the user only ever sees this
+     * sheet.
+     */
+    var sheetOpen = false;
+    var sheetTimer = 0;
+    var sheetNoticeTimer = 0;
+    var sheetDevices = [];
+    var sheetStatus = "loading"; // loading | ready | empty | error
+    var sheetPendingKey = "";
+    var sheetPendingSince = 0; // >0 once the adapter gave up waiting (still in flight)
+    var sheetPendingName = "";
+    // If a transfer never shows up as current, stop pretending after this long.
+    var SHEET_PENDING_MS = 15000;
+    var sheetDrag = null;
+    var sheetPull = null;
+    var sheetLastLoad = 0;
+    var sheetEmptyNote = false;
+    var sheetListSig = "";
+
+    // Fingerprint of the rendered list. A background refresh that finds the
+    // same devices must not rebuild the DOM: that would drop focus and scroll
+    // for no reason.
+    function deviceListSig(list) {
+      var parts = [];
+      for (var i = 0; i < list.length; i++) {
+        parts.push(
+          [list[i].key, list[i].name, list[i].subtitle, list[i].isActive ? 1 : 0].join("~")
+        );
+      }
+      return parts.join("|");
+    }
+
+    function deviceKeyOf(device) {
+      if (!device) return "";
+      return device.key || device.id || device.name || "";
+    }
+
+    function sheetHeight() {
+      try {
+        return sheetEl.getBoundingClientRect().height || 0;
+      } catch (e) {
+        return 0;
+      }
+    }
+
+    function setSheetAnim(on) {
+      sheetEl.classList.toggle("spm-dsheet-anim", !!on);
+      backdropEl.classList.toggle("spm-dsheet-anim", !!on);
+    }
+
+    // offset: px the sheet sits below its resting position. dim: backdrop
+    // opacity (undefined = back to the stylesheet value).
+    function paintSheet(offset, dim) {
+      sheetEl.style.transform = offset ? "translateY(" + Math.round(offset) + "px)" : "";
+      backdropEl.style.opacity = dim === undefined ? "" : String(Math.max(0, Math.min(1, dim)));
+    }
+
+    function setSheetNotice(text) {
+      if (!text) {
+        if (!sheetNotice.hidden) sheetNotice.hidden = true;
+        sheetNotice.textContent = "";
+        return;
+      }
+      sheetNotice.textContent = text;
+      sheetNotice.hidden = false;
+      window.clearTimeout(sheetNoticeTimer);
+      sheetNoticeTimer = window.setTimeout(function () {
+        sheetNotice.hidden = true;
+        sheetNotice.textContent = "";
+      }, 4000);
+    }
+
+    function sheetRow(device) {
+      var key = deviceKeyOf(device);
+      var pending = !!sheetPendingKey && sheetPendingKey === key;
+      var li = el("li", "spm-ditem", null);
+      var btn = el("button", "spm-drow", null);
+      btn.type = "button";
+      var icon = el("span", "spm-dicon", null);
+      if (device.icon) {
+        try {
+          icon.innerHTML = device.icon;
+        } catch (e) {}
+      }
+      if (!icon.firstChild) icon.innerHTML = SVG.deviceRow;
+      var text = el("span", "spm-dtext", null);
+      var nameEl = el("span", "spm-dname", null);
+      nameEl.textContent = device.name || "Unknown device";
+      text.appendChild(nameEl);
+      // Only real Spotify text is ever shown (a status line when Spotify has
+      // one, otherwise nothing — device types are not invented).
+      var subText = device.subtitle || device.type || "";
+      if (subText) {
+        var subEl = el("span", "spm-dsub", null);
+        subEl.textContent = subText;
+        text.appendChild(subEl);
+      }
+      var tail = el("span", "spm-dtail", null);
+      if (pending) tail.innerHTML = SVG.spinner;
+      else if (device.isActive) tail.innerHTML = SVG.check;
+      btn.appendChild(icon);
+      btn.appendChild(text);
+      btn.appendChild(tail);
+      btn.classList.toggle("spm-dactive", !!device.isActive);
+      btn.classList.toggle("spm-dpending", pending);
+      if (device.isActive) btn.setAttribute("aria-current", "true");
+      btn.setAttribute(
+        "aria-label",
+        (device.isActive ? "Currently playing on " : "Connect to ") + (device.name || "device")
+      );
+      if (pending) {
+        btn.setAttribute("aria-busy", "true");
+        btn.disabled = true;
+      }
+      btn.addEventListener("click", function () {
+        selectSheetDevice(device);
+      });
+      li.appendChild(btn);
+      return li;
+    }
+
+    function sheetStatusBlock() {
+      var wrap = el("div", "spm-dstatus", null);
+      if (sheetStatus === "ready") {
+        // Only ever shown under the current-device row, in Spotify's words.
+        var none = el("p", "spm-dmsg", null);
+        none.textContent = "No other devices found";
+        wrap.appendChild(none);
+        return wrap;
+      }
+      if (sheetStatus === "loading") {
+        var spin = el("span", "spm-dspin", SVG.spinner);
+        wrap.appendChild(spin);
+        var loading = el("p", "spm-dmsg", null);
+        loading.textContent = "Loading devices…";
+        wrap.appendChild(loading);
+        return wrap;
+      }
+      if (sheetStatus === "error") {
+        var err = el("p", "spm-dmsg", null);
+        err.textContent = "Couldn't load devices";
+        wrap.appendChild(err);
+        var retry = el("button", "spm-dghost spm-dretry", null);
+        retry.type = "button";
+        retry.textContent = "Try again";
+        retry.addEventListener("click", function () {
+          loadSheetDevices(true);
+        });
+        wrap.appendChild(retry);
+        return wrap;
+      }
+      var empty = el("p", "spm-dmsg", null);
+      empty.textContent = "No available devices";
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    function renderSheet() {
+      while (sheetList.firstChild) sheetList.removeChild(sheetList.firstChild);
+      var showList = sheetStatus === "ready" && sheetDevices.length > 0;
+      // The list can be one row (the current device) with nothing else around;
+      // that reads as "only my device", so the empty line is shown beneath it.
+      var showNote = showList && sheetEmptyNote;
+      sheetList.hidden = !showList;
+      // The status block is for everything that is NOT a plain list: with no
+      // list at all (loading / error / no devices) it must be visible, and with
+      // a list it only appears for the "no other devices" line underneath it.
+      sheetState.hidden = showList && !showNote;
+      if (showList) {
+        for (var i = 0; i < sheetDevices.length; i++) {
+          sheetList.appendChild(sheetRow(sheetDevices[i]));
+        }
+        if (!showNote) return;
+      }
+      while (sheetState.firstChild) sheetState.removeChild(sheetState.firstChild);
+      sheetState.appendChild(sheetStatusBlock());
+    }
+
+    function applyDeviceList(list) {
+      var info = null;
+      try {
+        info = spotify.getDevicesState ? spotify.getDevicesState() : null;
+      } catch (e) {
+        info = null;
+      }
+      var wasPending = sheetPendingKey;
+      sheetDevices = list || [];
+      // A pending transfer is settled by the list itself: the moment Spotify
+      // shows that device as current the spinner and the soft notice go away;
+      // if it never arrives, admit it instead of spinning forever.
+      if (sheetPendingKey) {
+        var pendingActive = false;
+        for (var p = 0; p < sheetDevices.length; p++) {
+          var pd = sheetDevices[p];
+          if (!pd || !pd.isActive) continue;
+          // The device we switched to comes back as Spotify's current-device
+          // row, whose key is the picker header — not the id we clicked — so
+          // the name is the reliable second signal.
+          if (
+            (sheetPendingKey && deviceKeyOf(pd) === sheetPendingKey) ||
+            (sheetPendingName && pd.name === sheetPendingName)
+          ) {
+            pendingActive = true;
+          }
+        }
+        if (pendingActive) {
+          sheetPendingKey = "";
+          sheetPendingSince = 0;
+          setSheetNotice("");
+        } else if (sheetPendingSince && nowMs() - sheetPendingSince > SHEET_PENDING_MS) {
+          var stuck = sheetPendingName || "that device";
+          sheetPendingKey = "";
+          sheetPendingSince = 0;
+          setSheetNotice("Couldn't switch to " + stuck + ".");
+        }
+      }
+      var others = 0;
+      for (var i = 0; i < sheetDevices.length; i++) {
+        if (!sheetDevices[i].isActive) others++;
+      }
+      var failed = !!(info && info.ok === false);
+      var wasStatus = sheetStatus;
+      var wasNote = sheetEmptyNote;
+      sheetEmptyNote = !failed && !others && sheetDevices.length > 0;
+      if (failed && sheetDevices.length) {
+        // A stale list still beats an empty sheet, but say so plainly.
+        setSheetNotice("Couldn't refresh devices.");
+      } else if (sheetNotice.textContent === "Couldn't refresh devices.") {
+        setSheetNotice("");
+      }
+      if (failed && !sheetDevices.length) sheetStatus = "error";
+      else sheetStatus = sheetDevices.length ? "ready" : "empty";
+      var sig = deviceListSig(sheetDevices);
+      var changed = sig !== sheetListSig;
+      sheetListSig = sig;
+      if (
+        changed ||
+        wasStatus !== sheetStatus ||
+        wasNote !== sheetEmptyNote ||
+        wasPending !== sheetPendingKey
+      ) {
+        renderSheet();
+      }
+    }
+
+    // Cached list paints instantly; the fresh read follows (opening the hidden
+    // native picker once). No polling: this runs on open, on retry, and on a
+    // throttled device-relevant snapshot beat while the sheet is visible.
+    function loadSheetDevices(force) {
+      if (sheetLoadTimer) {
+        window.clearTimeout(sheetLoadTimer);
+        sheetLoadTimer = 0;
+      }
+      sheetLastLoad = nowMs();
+      var cached = [];
+      try {
+        cached = spotify.getCachedDevices ? spotify.getCachedDevices() : [];
+      } catch (e) {
+        cached = [];
+      }
+      // The cached paint is change-aware: an unchanged background refresh must
+      // not rip rows out from under the user's finger (focus/scroll stay put).
+      if (cached && cached.length) {
+        applyDeviceList(cached);
+      } else if (sheetStatus !== "loading") {
+        sheetDevices = [];
+        sheetStatus = "loading";
+        sheetListSig = deviceListSig(sheetDevices);
+        renderSheet();
+      }
+      var promise = null;
+      try {
+        promise = force && spotify.refreshDevices ? spotify.refreshDevices() : spotify.getDevices();
+      } catch (e) {
+        promise = null;
+      }
+      if (!promise || !promise.then) {
+        if (!cached.length) {
+          sheetStatus = "error";
+          renderSheet();
+        }
+        return;
+      }
+      promise
+        .then(function (list) {
+          if (!sheetOpen) return;
+          applyDeviceList(list);
+        })
+        .catch(function () {
+          if (!sheetOpen) return;
+          if (!sheetDevices.length) {
+            sheetStatus = "error";
+            renderSheet();
+          }
+        });
+    }
+
+    function selectSheetDevice(device) {
+      if (!device || sheetPendingKey) return;
+      sheetPendingKey = deviceKeyOf(device);
+      sheetPendingSince = 0; // 0 = the adapter is still working on it
+      sheetPendingName = device.name || "that device";
+      renderSheet();
+      var promise = null;
+      try {
+        promise = spotify.selectDevice(device);
+      } catch (e) {
+        promise = null;
+      }
+      if (!promise || !promise.then) {
+        sheetPendingKey = "";
+        renderSheet();
+        setSheetNotice("Couldn't switch devices right now.");
+        return;
+      }
+      promise
+        .then(function (res) {
+          if (!sheetOpen) {
+            sheetPendingKey = "";
+            sheetPendingSince = 0;
+            return;
+          }
+          var hadPending = !!sheetPendingKey;
+          var list = res && res.devices && res.devices.length ? res.devices : null;
+          if (res && res.ok) {
+            sheetPendingKey = "";
+            sheetPendingSince = 0;
+            setSheetNotice("");
+          } else if (res && res.reason === "unconfirmed") {
+            // Spotify is still handing playback over (a sleeping speaker can
+            // take seconds). Keep the row pending and say so plainly — the
+            // list itself settles it, so a slow-but-successful switch is never
+            // reported as a failure.
+            sheetPendingSince = nowMs();
+            setSheetNotice("Still connecting to " + (device.name || "that device") + "…");
+          } else {
+            sheetPendingKey = "";
+            sheetPendingSince = 0;
+            setSheetNotice("Couldn't switch to " + (device.name || "that device") + ".");
+          }
+          if (list) applyDeviceList(list);
+          else renderSheet();
+          // A definitive rejection ends the pending state right here (the list
+          // reconciliation only watches for a device *becoming* current), so
+          // repaint the row out of its spinner explicitly.
+          if (hadPending && !sheetPendingKey) renderSheet();
+        })
+        .catch(function () {
+          sheetPendingKey = "";
+          sheetPendingSince = 0;
+          if (!sheetOpen) return;
+          renderSheet();
+          setSheetNotice("Couldn't switch to " + (device.name || "that device") + ".");
+        });
+    }
+
+    function beginSheet() {
+      if (sheetOpen) return;
+      sheetOpen = true;
+      root.classList.add("spm-dsheet-open");
+      sheetEl.hidden = false;
+      backdropEl.hidden = false;
+      try {
+        cardEl.setAttribute("aria-hidden", "true");
+        mini.setAttribute("aria-hidden", "true");
+      } catch (e) {}
+      sheetDevices = [];
+      sheetStatus = "loading";
+      sheetPendingKey = "";
+      sheetPendingSince = 0;
+      sheetPendingName = "";
+      sheetEmptyNote = false;
+      sheetListSig = "";
+      setSheetNotice("");
+      renderSheet();
+      // Read AFTER the slide lands: opening Spotify's own panel to read it is
+      // main-thread work, and doing it mid-animation made the open stutter. The
+      // cached list painted above is already on screen in the meantime.
+      // Claim the load slot too, or the first snapshot render sees a stale
+      // `sheetLastLoad` and fires the read mid-slide anyway.
+      sheetLastLoad = nowMs();
+      if (sheetLoadTimer) window.clearTimeout(sheetLoadTimer);
+      sheetLoadTimer = window.setTimeout(function () {
+        sheetLoadTimer = 0;
+        if (sheetOpen) loadSheetDevices(false);
+      }, 260);
+      // The card may be mid-gesture when the sheet opens: drop it so the two
+      // can never fight over the same pointer.
+      try {
+        abortGesture();
+      } catch (e) {}
+    }
+
+    function finishSheetOpen() {
+      try {
+        sheetClose.focus({ preventScroll: true });
+      } catch (e) {}
+    }
+
+    function glideSheetHome() {
+      if (prefersReducedMotion()) {
+        setSheetAnim(false);
+        paintSheet(0);
+        return;
+      }
+      setSheetAnim(true);
+      var raf = window.requestAnimationFrame || function (fn) {
+        return window.setTimeout(fn, 16);
+      };
+      raf(function () {
+        paintSheet(0);
+      });
+    }
+
+    function openSheet() {
+      if (sheetOpen) return;
+      beginSheet();
+      if (prefersReducedMotion()) {
+        setSheetAnim(false);
+        paintSheet(0);
+        finishSheetOpen();
+        return;
+      }
+      setSheetAnim(false);
+      paintSheet(sheetHeight() || 320, 0);
+      void sheetEl.offsetHeight; // land the start pose before animating
+      glideSheetHome();
+      window.clearTimeout(sheetTimer);
+      sheetTimer = window.setTimeout(finishSheetOpen, 300);
+    }
+
+    function hideSheetNow() {
+      sheetEl.hidden = true;
+      backdropEl.hidden = true;
+      setSheetAnim(false);
+      paintSheet(0);
+      try {
+        devicesBtn.focus({ preventScroll: true });
+      } catch (e) {}
+      // The environment was frozen while the sheet was up (see
+      // applyEnvironment) — re-read it now that the glass is ours again, from
+      // a fresh sample so a stale one can't masquerade as "agreed".
+      envSample = null;
+      scheduleEnvironment();
+    }
+
+    function closeSheet() {
+      if (!sheetOpen) return;
+      sheetOpen = false;
+      sheetDrag = null;
+      sheetPull = null;
+      root.classList.remove("spm-dsheet-open");
+      try {
+        cardEl.removeAttribute("aria-hidden");
+        mini.removeAttribute("aria-hidden");
+      } catch (e) {}
+      // If Spotify's picker is somehow still up (e.g. a read was interrupted),
+      // take it down so a native popup never lingers behind our UI.
+      try {
+        if (spotify.isDevicePickerOpen && spotify.isDevicePickerOpen() && spotify.closeDevices) {
+          spotify.closeDevices();
+        }
+      } catch (e) {}
+      if (prefersReducedMotion()) {
+        hideSheetNow();
+        return;
+      }
+      setSheetAnim(true);
+      paintSheet(sheetHeight() || 320, 0);
+      window.clearTimeout(sheetTimer);
+      sheetTimer = window.setTimeout(hideSheetNow, 280);
+    }
+
+    // --- drag: the sheet follows the finger, then commits or snaps back ---
+    function sheetDragStart(e) {
+      if (!sheetOpen || sheetDrag) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      sheetDrag = {
+        id: e.pointerId,
+        y0: e.clientY,
+        dy: 0,
+        t0: nowMs(),
+        lastY: e.clientY,
+        lastT: nowMs(),
+        vel: 0,
+      };
+      setSheetAnim(false); // direct manipulation: no transition while dragging
+      try {
+        sheetEl.setPointerCapture && sheetEl.setPointerCapture(e.pointerId);
+      } catch (err) {}
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function sheetDragMove(e) {
+      if (!sheetDrag || e.pointerId !== sheetDrag.id) return;
+      var dy = e.clientY - sheetDrag.y0;
+      var t = nowMs();
+      // Live (per-move) velocity, so a drag that stops before release is not
+      // mistaken for a flick.
+      sheetDrag.vel = (e.clientY - sheetDrag.lastY) / Math.max(1, t - sheetDrag.lastT);
+      sheetDrag.dy = dy;
+      sheetDrag.lastY = e.clientY;
+      sheetDrag.lastT = t;
+      var h = Math.max(160, sheetHeight());
+      // Downward tracks the finger 1:1; upward gets a short rubber band (the
+      // sheet is already fully open).
+      var offset = dy > 0 ? Math.min(dy, h) : Math.max(dy * 0.22, -36);
+      paintSheet(offset, Math.max(0.15, 1 - Math.max(0, offset) / h));
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function sheetDragEnd(e) {
+      if (!sheetDrag) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== sheetDrag.id) return;
+      var d = sheetDrag;
+      sheetDrag = null;
+      var h = Math.max(160, sheetHeight());
+      // Only a flick that was still moving when released counts as velocity.
+      var stalled = nowMs() - d.lastT > 140;
+      var vel = stalled ? 0 : d.vel; // px per ms, downward positive
+      if (d.dy > Math.max(64, h * 0.22) || (d.dy > 36 && vel > 0.6)) {
+        closeSheet();
+        return;
+      }
+      glideSheetHome();
+    }
+
+    // --- swipe up from the bottom edge of the player to open the sheet ---
+    function pullStart(e) {
+      if (sheetOpen || sheetPull || collapsed) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      var t = e.target;
+      if (
+        t &&
+        t.closest &&
+        t.closest("button, a, input, select, textarea, [role='slider'], .spm-bar, .spm-vol-bar, .spm-blob")
+      ) {
+        return;
+      }
+      var vh = window.innerHeight || 0;
+      if (vh && e.clientY < vh - 64) return; // only from the bottom edge strip
+      sheetPull = {
+        id: e.pointerId,
+        y0: e.clientY,
+        dy: 0,
+        t0: nowMs(),
+        armed: false,
+      };
+    }
+
+    function pullMove(e) {
+      if (!sheetPull || e.pointerId !== sheetPull.id) return;
+      var dy = e.clientY - sheetPull.y0;
+      sheetPull.dy = dy;
+      if (!sheetPull.armed) {
+        if (dy > 14) {
+          sheetPull = null; // downward: not a pull, let the card have it
+          return;
+        }
+        if (dy > -16) return;
+        sheetPull.armed = true;
+        beginSheet();
+        setSheetAnim(false);
+      }
+      var h = Math.max(180, sheetHeight());
+      var offset = Math.max(0, Math.min(h, h + dy));
+      paintSheet(offset, 1 - offset / h);
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function pullEnd(e) {
+      if (!sheetPull) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== sheetPull.id) return;
+      var p = sheetPull;
+      sheetPull = null;
+      if (!p.armed) return;
+      var dt = Math.max(1, nowMs() - p.t0);
+      var up = -p.dy;
+      var vel = up / dt;
+      if (up > 64 || (up > 28 && vel > 0.45)) {
+        glideSheetHome();
+        window.clearTimeout(sheetTimer);
+        sheetTimer = window.setTimeout(finishSheetOpen, 300);
+      } else {
+        closeSheet();
+      }
+    }
+
+    // Open on the press-release, not on the browser's synthesised click: on
+    // touch a tap only reaches `click` when nothing ate it first (touch-action,
+    // scroll slop, a cancelled pointer), which is why tapping Devices felt
+    // random while holding it worked. The click listener stays for
+    // keyboard/assistive input; `openSheet()` is idempotent, so a tap that
+    // delivers both never double-toggles.
+    devicesBtn.addEventListener("pointerup", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      openSheet();
+    });
+    devicesBtn.addEventListener("click", function () {
+      openSheet();
+    });
+    sheetClose.addEventListener("click", function () {
+      closeSheet();
+    });
+    backdropEl.addEventListener("click", function () {
+      closeSheet();
+    });
+    grabEl.addEventListener("pointerdown", sheetDragStart);
+    sheetHead.addEventListener("pointerdown", sheetDragStart);
+    cardEl.addEventListener("pointerdown", pullStart);
+    window.addEventListener("pointermove", pullMove, true);
+    window.addEventListener("pointerup", pullEnd, true);
+    window.addEventListener("pointercancel", function (e) {
+      if (sheetPull && e && e.pointerId === sheetPull.id) sheetPull = null;
+    }, true);
+    window.addEventListener("pointermove", sheetDragMove, true);
+    window.addEventListener("pointerup", sheetDragEnd, true);
+    window.addEventListener("pointercancel", function () {
+      if (sheetDrag) glideSheetHome();
+      sheetDrag = null;
+    }, true);
+    document.addEventListener("keydown", function (e) {
+      if (!sheetOpen) return;
+      if (e.key === "Escape" || e.key === "Esc") {
+        e.preventDefault();
+        closeSheet();
+      }
+    });
+
     // --- snapshot rendering (no full DOM rebuilds) ---
     function render(snap) {
       var prevSnap = lastSnap;
@@ -1647,6 +2350,24 @@
         setStatus(snap.isPlaying ? "Playing" : "Paused — pick something to play.");
       } else {
         setStatus("");
+      }
+
+      // Devices: while the sheet is visible, re-read Spotify's list at most
+      // once every 5s — devices come and go with no playback change at all, so
+      // this cannot hinge on a track signal. The read is the adapter's cached,
+      // single-flight one (it opens/hides Spotify's own picker once), it only
+      // runs while the sheet is open, and a refresh that finds the same devices
+      // repaints nothing. It is skipped while the adapter is mid-transfer (the
+      // list will change on its own) but hurried along once a transfer is
+      // waiting to be confirmed, so a late success lands in ~1.5s.
+      var transferInFlight = sheetPendingKey && !sheetPendingSince;
+      if (
+        sheetOpen &&
+        !transferInFlight &&
+        !sheetDrag &&
+        nowMs() - sheetLastLoad > (sheetPendingSince ? 1500 : 5000)
+      ) {
+        loadSheetDevices(false);
       }
 
       // Re-anchor the smooth clock. Spotify reports whole seconds, so a
