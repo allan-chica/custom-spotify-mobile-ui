@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SPM — playlist-read diagnostic</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0f0f10; color: #e8e8e8; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 15px; margin-top: 28px; color: #1ed760; }
+  p, li { color: #c9c9c9; }
+  pre { background: #17171a; border: 1px solid #2a2a30; border-radius: 8px;
+        padding: 14px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
+        white-space: pre; color: #d8d8d8; }
+  .warn { background: #2a1f10; border-color: #6b4a12; padding: 12px 14px; border-radius: 8px; }
+  button { font: 14px system-ui; padding: 8px 14px; border-radius: 6px; border: 1px solid #3a3a40;
+           background: #1ed760; color: #06230f; cursor: pointer; font-weight: 600; }
+  ol { padding-left: 22px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Which playlist list is actually being used?</h1>
+
+<p>This tells you, from your <em>real</em> Spotify tab, whether the extension is
+reading Spotify's own <b>Add&nbsp;to&nbsp;playlist</b> sheet (the correct list) or
+silently falling back to scraping the <b>Your Library</b> sidebar (the wrong one).</p>
+
+<h2>Run it</h2>
+<ol>
+  <li>Open <code>https://open.spotify.com</code> and start playing something.</li>
+  <li>Open DevTools (<code>F12</code>) &rarr; <b>Console</b>.</li>
+  <li>Open <code>tests/diagnose-playlists.js</code>, copy the whole thing, paste it
+      into the console and press <kbd>Enter</kbd>.</li>
+  <li>Copy the printed block back here.</li>
+</ol>
+
+<div class="warn">
+  <p style="margin:0"><b>Reload the extension first</b> if you have just changed
+  the code, then refresh the Spotify tab — the diagnostic reads what the running
+  extension actually does.</p>
+</div>
+
+<h2>What it prints</h2>
+<pre>GATE 1  curation button ...... found / NOT FOUND + why
+GATE 2  liked state .......... true / false / null
+GATE 3  click opens sheet .... yes / no (+ how long it took)
+GATE 4  sheet rows ........... N menuitemcheckbox rows, and whether each
+                                resolves to a spotify: uri
+GATE 5  source that won ...... "curation" (correct)  or  "library" (wrong)
+SHEET    rows currently rendered in OUR OWN bottom sheet</pre>
+
+<p>The line that matters is <b>GATE 5</b>. If it says <code>library</code>, the
+correct sheet either never opened or never mounted its rows — GATE 3 and GATE 4
+say which.</p>
+
+</main>
+</body>
+</html>

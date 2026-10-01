@@ -1,0 +1,406 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>spm diag</title>
+<style>
+  body { font: 13px system-ui; margin: 0; background: #121212; color: #fff; }
+  #out { white-space: pre-wrap; font: 12px ui-monospace, monospace; padding: 12px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; height: 90px; background: #000;
+           display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  [data-testid="now-playing-widget"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] [data-encore-id="listRowTitle"] { flex: 1; }
+  img[data-testid="entity-image"] { width: 32px; height: 32px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+
+<!-- ===== Player bar. The heart is VERBATIM from the report (saved state) ===== -->
+<footer data-testid="now-playing-bar">
+  <div data-testid="now-playing-widget">
+    <img data-testid="cover-art-image" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+    <a href="/track/abc123">Real Track</a>
+    <button aria-checked="true" class="e-10860-legacy-button e-10860-legacy-button-tertiary e-10860-overflow-wrap-anywhere e-10860-button-tertiary--icon-only-small e-10860-button-tertiary--icon-only e-10860-button-tertiary--condensed encore-internal-color-text-bright-accent" aria-label="Add to playlist" data-encore-id="buttonTertiary" aria-expanded="false"><span aria-hidden="true" class="e-10860-button__icon-wrapper"><svg data-encore-id="icon" role="img" aria-hidden="true" class="e-10860-icon" viewBox="0 0 16 16" style="--encore-icon-fill: var(--text-bright-accent); --encore-icon-height: var(--encore-graphic-size-decorative-smaller); --encore-icon-width: var(--encore-graphic-size-decorative-smaller);"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8m11.748-1.97a.75.75 0 0 0-1.06-1.06l-4.47 4.47-1.405-1.406a.75.75 0 1 0-1.061 1.06l2.466 2.467 5.53-5.53z"></path></svg></span></button>
+  </div>
+  <button data-testid="control-button-playpause" aria-label="Pause">||</button>
+  <button data-testid="add-button" aria-label="Remove from Liked Songs" aria-checked="true">&#9829;</button>
+</footer>
+
+<script src="../spotifyAdapter.js"></script>
+<script>
+/* VERBATIM structure from the report:
+ *   div[data-tippy-root][id=tippy-36] (inline z-index/position/inset/transform)
+ *     > div#context-menu[data-testid=context-menu][data-placement=top-start]
+ *       > form > title + search(role=search > input[role=searchbox] + expand-button)
+ *              + ul#curation-sheet-list[role=menu][data-depth=0]
+ *                  New playlist row + hr
+ *                  + div[data-overlayscrollbars=host][style height:792px]
+ *                      > div[data-overlayscrollbars-viewport]
+ *                          > div[data-scroll-size-contained][height:784px]
+ *                              > top-sentinel / rows / bottom-sentinel
+ *              + Cancel
+ */
+var LIKED_URI = "spotify:collection:tracks";
+var PLAYLISTS = [
+  ["spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", "web swinging in nyc", "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000dec505176066249626d28081f6f1"],
+  ["spotify:playlist:4zZa7QE5aV82huyDbtR8En", "IX \u00b7 MMXXVI",  "https://mosaic.scdn.co/60/ab67616d00001e023"],
+  ["spotify:playlist:0GSoubNd1aMs7hJjdedYcf", "VI \u00b7 MMXXVI",  "https://mosaic.scdn.co/60/ab67616d00001e020"],
+  ["spotify:playlist:4SX1HQaUaInlyuZWP3Q7j7", "V \u00b7 MMXXVI",   "https://mosaic.scdn.co/60/ab67616d00001e022"],
+  ["spotify:playlist:00w41uqROQymsUsla3Vk63", "IV \u00b7 MMXXVI",  "https://mosaic.scdn.co/60/ab67616d00001e021"],
+  ["spotify:playlist:6rfoNwFpRr2uJ5MGlXfaxY", "My playlist #9",    "https://i.scdn.co/image/ab67616d000011eb350ab7a839c04bfd5225a9f5"],
+  ["spotify:playlist:5xOYHulYoliZZLm5LktVFz", "pothos \ud83c\udf3f", "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000dec559368ba122ca56ef543c3f5d"],
+  ["spotify:playlist:5GNcNNXQj70EtIMjBcNDwz", "twinning",          "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000dec5413d31f468a6e1ca6d358185"],
+  ["spotify:playlist:5Puf1110c0MI151l0d8yym", "chillin",           "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000dec531746559fea7f04d4db126a3"],
+  ["spotify:playlist:3NjjFdOp2vdE61W09T3OOP", "mandys playlist",   "https://i.scdn.co/image/ab67616d000011eb2bf0876d42b90a8852ad6244"],
+  ["spotify:playlist:6wxY1w7dYQUOC5M9vsgjuR", "feelin good",       "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000dec5d9bc0b2d6b03d37169153536"],
+  ["spotify:playlist:4Iw2bmBCgRvd4lZjdkRo7d", "Doggo-melon",       "https://image-cdn-fa.spotifycdn.com/image/ab67706c0000dec52766a254646c0f5cf26533ec"],
+  ["spotify:playlist:36LGUWbBkU0W9Cdaahqdq8", "Mood",              "https://mosaic.scdn.co/60/ab67616d00001e024"],
+];
+
+var membership = {};
+var liked = true;          // the report's pasted state: aria-checked="true"
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function titleP(uri, name, extraCls) {
+  return '<p class="e-10860-text encore-text-body-medium e-10860-legacy-list-row-title' +
+    (extraCls ? " " + extraCls : "") + ' e-10860-overflow-wrap-anywhere"' +
+    ' data-encore-id="listRowTitle" id="listrow-title-' + uri + '" aria-hidden="true" dir="auto">' +
+    '<span class="e-10860-line-clamp" style="--encore-line-clamp: 1;">' + esc(name) + '</span></p>';
+}
+function boxOpen(uri, inner) {
+  return '<div class="e-10860-legacy-box e-10860-legacy-box--naked e-10860-legacy-list-row' +
+    ' e-10860-legacy-list-row--has-leading" data-encore-id="listRow" role="group"' +
+    ' aria-labelledby="listrow-title-' + uri + '">' + inner + '</div>';
+}
+function leafRow(uri, name, art, pos, setsize) {
+  var checked = uri === LIKED_URI ? liked : !!membership[uri];
+  var srcset = art.indexOf("/60/") !== -1 ? ' srcset="' + art + '30w, ' + art + '60w"' : "";
+  var artInner = '<div class="xsM7tKwCQh3qDY73XOsa bsl4n8pLYc2Cyi3itPad"' +
+    ' style="width: 32px; height: 32px; --extracted-entity-color: #405890;">' +
+    '<img aria-hidden="true" draggable="false" loading="eager" src="' + art + '"' + srcset +
+    ' data-image-status="loaded" data-testid="entity-image" alt="' + esc(name) + '"></div>';
+  var slotInner = '<div class="e-10860-legacy-list-row__slot e-10860-legacy-list-row__interactive">' +
+    '<div class="_7uVucVDKIIVSb_hGumyg">' +
+    (checked ? '<svg data-encore-id="icon" class="e-10860-icon"><title>Pinned</title><path d="M8.822.797a2.72 2.72 0 0 1 3.847 0z"></path></svg>' : '<span class="s_YTTfBInHKL4bMd0_ow"></span>') +
+    '</div></div>';
+  return '<li role="presentation" data-depth="0">' +
+    '<button class="QpDFZgzjNoy0kJn5o07g" as="button" role="menuitemcheckbox"' +
+      ' aria-checked="' + (checked ? "true" : "false") + '"' +
+      ' aria-setsize="' + setsize + '" aria-posinset="' + pos + '" tabindex="-1">' +
+      boxOpen(uri,
+        '<div class="e-10860-legacy-list-row__header-side">' +
+          '<div class="e-10860-legacy-list-row__header-side-flex">' + artInner + '</div>' +
+        '</div>' +
+        '<div class="e-10860-legacy-list-row__header">' +
+          '<div class="e-10860-legacy-list-row__column e-10860-legacy-list-row__interactive">' +
+            titleP(uri, name) +
+          '</div>' + slotInner +
+        '</div>') +
+    '</button></li>';
+}
+
+function buildTippyHTML(opts) {
+  // Populated eagerly by default; mountTippy() clears the row host and
+  // re-populates only once the popper is actually visible (real behaviour).
+  var setsize = PLAYLISTS.length + 2;
+  var newRow = '<li role="presentation" data-depth="0">' +
+    '<button class="QpDFZgzjNoy0kJn5o07g znIte5MdBYabbtEqHqH5" as="button" role="menuitem"' +
+      ' aria-setsize="' + setsize + '" aria-posinset="1" tabindex="-1">' +
+      boxOpen("new-playlist",
+        '<div class="e-10860-legacy-list-row__header-side"><div class="e-10860-legacy-list-row__header-side-flex">' +
+          '<svg data-encore-id="icon" class="e-10860-icon"><path d="M15.25 8a.75.75 0 0 1-.75.75h-5.75v5.75z"></path></svg>' +
+        '</div></div>' +
+        '<div class="e-10860-legacy-list-row__header"><div class="e-10860-legacy-list-row__column e-10860-legacy-list-row__interactive">' +
+          '<p class="e-10860-text encore-text-body-medium e-10860-legacy-list-row-title"' +
+          ' data-encore-id="listRowTitle" id="listrow-title-new-playlist" aria-hidden="true">New playlist</p>' +
+        '</div></div>') +
+    '</button></li>';
+
+  var rows = newRow +
+    '<hr data-encore-id="menuDivider" role="separator" class="e-10860-menu-divider e-10860-divider e-10860-divider--horizontal">' +
+    '<div data-overlayscrollbars-initialize="true" class="MXLZNxYnZTku_kjmH6CT WiwnWsPYbL585uUaVMp3"' +
+      ' data-overlayscrollbars="host" style="height: 300px;">' +
+      '<div class="" data-overlayscrollbars-viewport="scrollbarHidden overflowXHidden overflowYScroll"' +
+        ' tabindex="-1" style="overflow-y: scroll;">' +
+        '<div class="VJN7Cu7VWHMAJ4ghR2wg">' +
+          '<div class="RqGU3Bco6eU_KHXAMKcc" role="presentation" data-scroll-size-contained="">' +
+            '<div data-testid="top-sentinel" class="XNT0N5oukEX9iqsWLYbH" role="presentation"></div>' +
+            '<div class="SPM_ROWS_HOST" role="presentation" style="transform: translateY(0px);">' +
+              (opts && opts.lazy ? "" :
+                leafRow(LIKED_URI, "Liked Songs", "https://misc.scdn.co/liked-songs/liked-songs-64.png", 2, setsize) +
+                PLAYLISTS.map(function (p, i) {
+                  return leafRow(p[0], p[1], p[2], i + 3, setsize);
+                }).join("")) +
+            '</div>' +
+            '<div data-testid="bottom-sentinel" class="BGtuXhtIDyTDMXKopwpX" role="presentation"></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  var form =
+    '<form class="y_CFKW8usK4BrguFZgGF" style="--placeholder-image: none;">' +
+      '<div class="yRKpY9ZGM2HiJSaUwNwS">' +
+        '<span class="e-10860-text encore-text-marginal-bold AVvWhTjVvPI9nwt88HzA" data-encore-id="text">Add to playlist</span>' +
+      '</div>' +
+      '<div class="BrtO78Hq7fXUY0A0VcXX">' +
+        '<div class="PWxxd2O9XAbPUS3VyX3J tFf2FP5jXicj0UYsUNU6" role="search">' +
+          '<input class="owRCnNd0XkXhLaGHk2A7 y2sm2xHVqln2GSmdiPfW" role="searchbox" maxlength="80"' +
+            ' autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Find a playlist"' +
+            ' aria-hidden="false" aria-label="Find a playlist" value="">' +
+          '<div class="AjX2oM8b60mkHFLx0U3A"><span class="xdp6fcHdHgCrZblaPT0m">' +
+            '<svg data-encore-id="icon" class="e-10860-icon" viewBox="0 0 16 16"><path d="M7 1.75a5.25 5.25 0 1 0 0 10.5z"></path></svg>' +
+          '</span></div>' +
+          '<button data-testid="expand-button" aria-hidden="true" tabindex="-1" aria-label="Find a playlist" class="GLaDjsVWLhjSOo9Y5rC_">' +
+            '<svg data-encore-id="icon" class="e-10860-icon" viewBox="0 0 16 16"><path d="M7 1.75a5.25 5.25 0 1 0 0 10.5z"></path></svg>' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+      '<ul tabindex="0" role="menu" data-depth="0" aria-label="Add to playlist menu"' +
+        ' class="mWz9Rk7kHk7egR7hsAyt" id="curation-sheet-list" data-roving-interactive="1">' + rows +
+      '</ul>' +
+      '<div class="SKQ_ro1AL4NJXhi4LqKz">' +
+        '<button type="button" class="e-10860-legacy-button" data-encore-id="buttonTertiary">Cancel</button>' +
+        '<button type="button" class="e-10860-legacy-button" data-encore-id="buttonTertiary">Done</button>' +
+      '</div>' +
+    '</form>';
+
+  return '<div data-tippy-root="" id="tippy-36"' +
+      ' style="z-index: 9999; position: absolute; inset: auto auto 0px 0px; margin: 0px; transform: translate(299px, -68px);">' +
+    '<div id="context-menu" data-testid="context-menu" data-placement="top-start">' + form + '</div>' +
+  '</div>';
+}
+
+/* ---------------- fake Spotify behaviour ---------------- */
+var open = false;
+function curationBtn() {
+  return document.querySelector('footer button[data-encore-id="buttonTertiary"]');
+}
+function syncBtn() {
+  var b = curationBtn();
+  b.setAttribute("aria-checked", liked ? "true" : "false");
+  b.setAttribute("aria-label", liked ? "Add to playlist" : "Add to Liked Songs");
+  var sym = document.querySelector('button[data-testid="add-button"]');
+  if (sym) {
+    sym.setAttribute("aria-checked", liked ? "true" : "false");
+    sym.setAttribute("aria-label", liked ? "Remove from Liked Songs" : "Add to Liked Songs");
+  }
+}
+function tippyRoot() {
+  return document.getElementById("tippy-36");
+}
+function listEl() {
+  return document.getElementById("curation-sheet-list");
+}
+function rowsHost() {
+  var t = tippyRoot();
+  return t ? t.querySelector(".SPM_ROWS_HOST") : null;
+}
+
+/* Real popper behaviour, and the thing a synthetic fixture usually fakes
+ * away: a popper only LAYS OUT (and tippy only positions) once it is
+ * actually visible. Anything holding it at visibility:hidden keeps it from
+ * ever committing its open state — so rows stay unmounted and the sheet is
+ * an empty, zero-height <ul>. That is what we want to test against. */
+function tryPopulate(attempt) {
+  if (!open) return;
+  var t = tippyRoot();
+  var hidden = false;
+  try {
+    hidden = !!t && getComputedStyle(t).visibility === "hidden";
+  } catch (e) {}
+  if (hidden && attempt < 25) {
+    setTimeout(function () { tryPopulate(attempt + 1); }, 80);
+    return;
+  }
+  var host = rowsHost();
+  if (!host) return;
+  if (hidden) {
+    out.push("      [spotify] popper still visibility:hidden after 2s -> content never mounts");
+    return;
+  }
+  var setsize = PLAYLISTS.length + 2;
+  var html = leafRow(LIKED_URI, "Liked Songs", "https://misc.scdn.co/liked-songs/liked-songs-64.png", 2, setsize) +
+    PLAYLISTS.map(function (p, i) { return leafRow(p[0], p[1], p[2], i + 3, setsize); }).join("");
+  host.innerHTML = html;
+  wireRows();
+  out.push("      [spotify] popper content mounted (" + PLAYLISTS.length + " rows)");
+}
+
+function wireRows() {
+  var form = tippyRoot() && tippyRoot().querySelector("form");
+  if (!form) return;
+  Array.prototype.forEach.call(form.querySelectorAll('button[role="menuitemcheckbox"]'), function (b) {
+    b.addEventListener("click", function (e) {
+      e.preventDefault();   // real rows are type=submit inside the form
+      var on = b.getAttribute("aria-checked") !== "true";
+      b.setAttribute("aria-checked", on ? "true" : "false");
+      var box = b.querySelector('[data-encore-id="listRow"]');
+      out.push("      [spotify] staged " +
+        (box ? box.getAttribute("aria-labelledby") : "?") + " -> " + on);
+    });
+  });
+  Array.prototype.forEach.call(form.querySelectorAll("button"), function (b) {
+    if (b.textContent !== "Cancel" && b.textContent !== "Done") return;
+    b.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (b.textContent === "Done") {
+        Array.prototype.forEach.call(form.querySelectorAll('button[role="menuitemcheckbox"]'), function (x) {
+          var d = x.querySelector('[data-encore-id="listRow"]');
+          var clean = (d ? d.getAttribute("aria-labelledby") : "").replace(/^listrow-title-/, "");
+          var on = x.getAttribute("aria-checked") === "true";
+          if (clean === LIKED_URI) liked = on; else membership[clean] = on;
+        });
+      }
+      out.push("      [spotify] " + b.textContent + " (liked=" + liked + ")");
+      unmountTippy();
+    });
+  });
+}
+
+function mountTippy() {
+  if (open) return;
+  document.body.insertAdjacentHTML("beforeend", buildTippyHTML({ lazy: true }));
+  open = true;
+  tryPopulate(0);
+}
+function unmountTippy() {
+  var t = tippyRoot();
+  if (t && t.parentNode) t.parentNode.removeChild(t);
+  open = false;
+  syncBtn();
+}
+curationBtn().addEventListener("click", function () {
+  if (open) return;                                // saved -> opens the sheet
+  if (!liked) { liked = true; syncBtn(); return; } // unsaved -> a real Like
+  mountTippy();
+});
+document.querySelector('button[data-testid="add-button"]').addEventListener("click", function () {
+  liked = !liked;
+  syncBtn();
+});
+
+/* ---------------- gate tracing + assertions ---------------- */
+var out = [], fails = 0;
+function ok(c, m) { if (!c) fails++; out.push((c ? "PASS  " : "FAIL  ") + m); }
+function note(m) { out.push("      " + m); }
+function byId(list, id) {
+  return (list || []).filter(function (p) { return p.id === id; })[0];
+}
+
+function gate(label, fn) {
+  try {
+    var v = fn();
+    note(label + " => " + JSON.stringify(v));
+    return v;
+  } catch (e) {
+    note(label + " => THREW " + (e && e.message));
+    return null;
+  }
+}
+
+// Independent oracle: what does the DOM actually offer? (never trusts the
+// adapter, so a disagreement is a real finding.)
+function oracleRows() {
+  var ul = document.getElementById("curation-sheet-list");
+  if (!ul) return { ul: false };
+  var rects = ul.getClientRects();
+  var rect = ul.getBoundingClientRect();
+  var btns = Array.prototype.slice.call(ul.querySelectorAll('button[role="menuitemcheckbox"]'));
+  return {
+    ul: true,
+    visible: rects.length > 0 && rect.width > 0 && rect.height > 0,
+    rects: rects.length,
+    label: ul.getAttribute("aria-label"),
+    depth: ul.getAttribute("data-depth"),
+    checkedRows: btns.length,
+    expandedRows: btns.filter(function (b) { return b.getAttribute("aria-expanded") !== null; }).length,
+    inOurRoot: !!ul.closest("#spm-root"),
+    inTippy: !!ul.closest("[data-tippy-root]"),
+    setsize: btns.length ? btns[0].getAttribute("aria-setsize") : null,
+  };
+}
+
+var sp = window.SpotMobile.spotify;
+
+gate("gate1 curation button in bar/widget", function () {
+  var scope = document.querySelector('[data-testid="now-playing-widget"]');
+  var b = scope && scope.querySelector('button[data-encore-id="buttonTertiary"][aria-checked]');
+  return b ? { label: b.getAttribute("aria-label"), checked: b.getAttribute("aria-checked") } : null;
+});
+gate("gate2 isLiked()", function () { return sp.isLiked(); });
+gate("gate3 inspectPlaylists().curationButton", function () {
+  return sp.inspectPlaylists().curationButton;
+});
+note("--- adapter read on a SAVED track (button aria-checked=true) ---");
+sp.getPlaylists({ fresh: true }).then(function (list) {
+  note("getPlaylists -> " + (list ? list.length : 0) + " rows");
+  (list || []).forEach(function (p) {
+    note("  " + (p.containsTrack ? "[x] " : "[ ] ") + JSON.stringify(p.id) + "  " + p.name);
+  });
+  gate("gate4 inspectPlaylists() after read", function () {
+    var i = sp.inspectPlaylists();
+    return {
+      curationOpen: i.curationOpen,
+      curationRows: i.curationRows.length,
+      library: i.library.length,
+      cachedViaCuration: i.cached.viaCuration,
+      cachedReason: i.cached.reason,
+      cachedOk: i.cached.ok,
+      cachedRows: (i.cached.list || []).length,
+    };
+  });
+  note("--- oracle re-check (sheet should be closed now) ---");
+  gate("gate5 oracle after read", oracleRows);
+  var EXPECTED = PLAYLISTS.length + 1;
+  ok(!!list && list.length === EXPECTED, "returns all " + EXPECTED + " rows from the tippy sheet");
+  ok(!!list && list[0] && list[0].isLikedSongs, "Liked Songs first");
+  ok(!!list && byId(list, "1w4tj8rQmdzeNmV7JzCbeE"), "playlist ids parsed from the tippy sheet");
+  ok(!!list && byId(list, "36LGUWbBkU0W9Cdaahqdq8"), "last row parsed too (no virtualization loss)");
+  var st = sp.getPlaylistsState();
+  ok(!!byId(list, "36LGUWbBkU0W9Cdaahqdq8"), "row count matches the sheet, not the library");
+
+  // Now the unsaved-track dance on the SAME tippy structure.
+  liked = false;
+  syncBtn();
+  out.push("--- unsaved track: transient dance on the tippy sheet ---");
+  return sp.getPlaylists({ fresh: true }).then(function (l2) {
+    note("getPlaylists(unsaved) -> " + (l2 ? l2.length : 0) + " rows");
+    ok(!!l2 && l2.length === EXPECTED, "unsaved track also returns all " + EXPECTED + " rows");
+    ok(l2 && l2[0] && l2[0].containsTrack === false, "unsaved read reports Liked=false");
+    ok(liked === false, "no Like leaked on the tippy path");
+    ok(sp.isLiked() === false, "isLiked() false after the unsaved read");
+
+    out.push("--- add through the tippy sheet ---");
+    return sp.addToPlaylist({ id: "1w4tj8rQmdzeNmV7JzCbeE",
+      uri: "spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", name: "web swinging in nyc" })
+      .then(function (res) {
+        note("addToPlaylist -> ok=" + (res && res.ok) + " reason=" + (res && res.reason));
+        ok(!!res && res.ok === true, "addToPlaylist succeeds through the tippy sheet");
+        return sp.getPlaylists({ fresh: true });
+      })
+      .then(function (l3) {
+        var t = byId(l3, "1w4tj8rQmdzeNmV7JzCbeE");
+        note("re-read containsTrack=" + (t && t.containsTrack));
+        ok(!!t && t.containsTrack === true, "add committed and read back");
+        ok(!!l3 && l3.length === EXPECTED, "row count unchanged after add");
+      });
+  });
+}).then(function () {
+  var pre = document.getElementById("out");
+  pre.textContent = out.join("\n") + "\n\n" + (fails ? fails + " FAILED" : "ALL PASSED");
+  document.title = fails ? "FAILED" : "DONE";
+}, function (e) {
+  out.push("THREW: " + ((e && e.stack) || e));
+  fails++;
+  var pre = document.getElementById("out");
+  pre.textContent = out.join("\n") + "\n\nFAILED";
+  document.title = "FAILED";
+});
+</script>
+</body>
+</html>

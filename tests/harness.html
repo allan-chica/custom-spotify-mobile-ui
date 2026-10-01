@@ -641,14 +641,29 @@
             btn.setAttribute("aria-checked", checked ? "true" : "false");
             btn.setAttribute("aria-setsize", String(setsize));
             btn.setAttribute("aria-posinset", String(pos++));
-            btn.setAttribute("aria-labelledby", "listrow-title-" + uri);
+            // Real Spotify shape: the button carries NO aria-labelledby —
+            // listrow-title-<uri> hangs off the inner listRow group.
+            var box = document.createElement("div");
+            box.setAttribute("data-encore-id", "listRow");
+            box.setAttribute("role", "group");
+            box.setAttribute("aria-labelledby", "listrow-title-" + uri);
+            var header = document.createElement("div");
+            header.className = "legacy-list-row__header";
+            var side = document.createElement("div");
+            side.className = "legacy-list-row__header-side";
+            var sideFlex = document.createElement("div");
+            sideFlex.className = "legacy-list-row__header-side-flex";
             if (art) {
+              var artWrap = document.createElement("div");
               var img = document.createElement("img");
               img.setAttribute("data-testid", "entity-image");
               img.alt = labelText;
               img.src = art;
-              btn.appendChild(img);
+              artWrap.appendChild(img);
+              sideFlex.appendChild(artWrap);
             }
+            side.appendChild(sideFlex);
+            header.appendChild(side);
             var pt = document.createElement("p");
             pt.setAttribute("data-encore-id", "listRowTitle");
             pt.id = "listrow-title-" + uri;
@@ -656,10 +671,12 @@
             var sp = document.createElement("span");
             sp.textContent = labelText;
             pt.appendChild(sp);
-            btn.appendChild(pt);
+            header.appendChild(pt);
             var slot = document.createElement("span");
             slot.setAttribute("data-slot", checked ? "checked" : "empty");
-            btn.appendChild(slot);
+            header.appendChild(slot);
+            box.appendChild(header);
+            btn.appendChild(box);
             btn.addEventListener("click", function (e) {
               e.preventDefault();
               // STAGED like Spotify: flip the visual only; Done commits,
@@ -721,17 +738,29 @@
           logLine("[spotify] curation sheet opened");
         }
 
+        function harnessRowUri(el) {
+          // Same resolution order the adapter must use: the label lives on the
+          // inner listRow group, and the title <p> carries the id.
+          var box = el.querySelector('[data-encore-id="listRow"]');
+          var labelled = box ? box.getAttribute("aria-labelledby") || "" : "";
+          if (!labelled) {
+            var t = el.querySelector('p[data-encore-id="listRowTitle"]');
+            if (t && t.id) labelled = t.id;
+          }
+          var m = labelled.match(/listrow-title-(.+)$/);
+          return m ? m[1] : "";
+        }
+
         function curationStagedRows() {
           if (!curationFormEl) return [];
           var out = [];
           var btns = curationFormEl.querySelectorAll('button[role="menuitemcheckbox"]');
           for (var i = 0; i < btns.length; i++) {
-            var labelled = btns[i].getAttribute("aria-labelledby") || "";
-            var m = labelled.match(/listrow-title-(.+)$/);
-            if (!m || m[1] === "new-playlist") continue;
+            var uri = harnessRowUri(btns[i]);
+            if (!uri || uri === "new-playlist") continue;
             out.push({
               el: btns[i],
-              uri: m[1],
+              uri: uri,
               checked: btns[i].getAttribute("aria-checked") === "true",
             });
           }

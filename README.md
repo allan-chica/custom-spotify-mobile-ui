@@ -341,14 +341,30 @@ verified checkbox toggles for add AND remove):
 - Sheet: `form` with title `Add to playlist`, search
   `input[role="searchbox"][aria-label="Find a playlist"]`, and
   `ul#curation-sheet-list[aria-label="Add to playlist menu"]` holding
-  `li > button[role="menuitemcheckbox"][aria-checked]` rows whose
-  `aria-labelledby="listrow-title-<spotify:collection:tracks|
-  spotify:playlist:<id>|new-playlist>"` gives exact identity (no name
-  matching), with `p[data-encore-id="listRowTitle"]` names and
+  `li > button[role="menuitemcheckbox"][aria-checked]` rows, with
+  `p[data-encore-id="listRowTitle"]` names and
   `img[data-testid="entity-image"]` artwork, plus a Cancel button. The list
   is virtualized — reads sweep it via the sheet's own scroll viewport.
+- Row identity comes from `listrow-title-<spotify:collection:tracks|
+  spotify:playlist:<id>|new-playlist>` (exact, no name matching). **This lives
+  on the inner `div[data-encore-id="listRow"][role="group"]`, not on the
+  `<button>`** — the button is bare. So it is resolved from the row's own
+  `aria-labelledby`, then any nested one, then the title element's `id`
+  (the same dual shape the device rows use). Keying rows by the button's own
+  attributes yields zero rows, which silently drops the read to the fallback
+  library scrape and shows the *wrong* playlist list.
+- Playlist ids are read with the same character class everywhere
+  (`[A-Za-z0-9_-]+`, as `parsePlaylistHref` already used) so an id is never
+  truncated to a prefix.
 - `aria-checked` on the rows IS the membership truth (Liked included);
   clicking a row really toggles it, verified by polling the flip.
+- The sheet mounts inside a tippy popper, so the "hide Spotify's menus while
+  we drive them" veil **dims poppers with `opacity: 0` instead of hiding them
+  with `visibility: hidden`**. A popper that cannot lay out never mounts its
+  rows, and the read then silently degrades to the Your Library scrape — the
+  wrong list, with no error anywhere. If a build still refuses to mount a
+  dimmed popper, the open helpers drop the veil and look once more rather than
+  report failure.
 - Unsaved tracks need a transient-like dance to open the sheet (click#1
   Likes for real, click#2 opens); before closing, the sheet's own Liked row
   is toggled back off (verified), so the net state change is exactly zero.
@@ -474,6 +490,42 @@ Writes:
 Dynamics: a debounced `MutationObserver` (attributes + childList on
 `documentElement`) emits snapshots to subscribers; a light 2s→5s fallback timer
 only does real work while the player is missing. No aggressive polling.
+
+## Tests
+
+`npm test` runs both suites headlessly in Chrome (no dependencies and no dev
+server — they drive `file://` over the Chrome DevTools Protocol):
+
+| Script | What it covers |
+| --- | --- |
+| `npm run test:curation` | `tests/real-dom-curation.html` — the curation sheet built from DOM pasted off open.spotify.com. Asserts all rows are parsed (id / uri / name / artwork / membership) and that add, remove and bulk-draft really commit, with no Like leaked by the transient dance. |
+| `npm run test:tippy` | `tests/real-dom-tippy.html` — the same sheet inside its real `div[data-tippy-root] > div#context-menu` portal, driven by a fake popper that only lays out once it is actually visible. This is what caught the veil deadlock below. |
+| `npm run test:sheet` | `tests/harness.html` + `tests/probe-sheet.js` — taps our own heart, asserts the sheet lists **every** playlist, stages a row and presses Done, then verifies against the harness's server-side membership and checks no native menu leaked behind the sheet. |
+| `npm run test:fallback` | `tests/harness.html` + `tests/probe-fallback.js` — forces the fallback (curation button hidden) and asserts the merged library+submenu list has no duplicates, no rows without an id, and exact `spotify:` uris. |
+
+`tests/cdp-run.js` and `tests/cdp-probe.js` are the two drivers (both take a
+repo-relative path). The harness's fake rows deliberately mirror the real row
+shape — label on the inner `listRow` group, hyphenated ids — so a regression in
+row keying fails here instead of only against the live site.
+
+### Diagnosing on a real Spotify tab
+
+`npm run diagnose` points at `tests/diagnose-playlists.html`. Open it, copy
+`tests/diagnose-playlists.js`, and paste it into the DevTools console of a
+loaded `open.spotify.com` tab. It reports, gate by gate, whether the extension
+is really reading Spotify's own Add-to-playlist sheet:
+
+```text
+GATE 1  curation button found (and why not, if it isn't)
+GATE 2  liked state
+GATE 3  does clicking it open the sheet, and how long it took
+GATE 4  rows in the sheet, and how each row's identity resolved
+GATE 5  source that won: "curation" (correct) or "library" (wrong)
+SHEET    the rows currently rendered in OUR OWN bottom sheet
+```
+
+GATE 5 is the one that matters — `library` means the sheet read lost and the
+wrong list is being shown.
 
 ## Limitations (honest)
 

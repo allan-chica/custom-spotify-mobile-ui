@@ -2551,10 +2551,24 @@
         var id = parsePlaylistHref(href);
         if (!id || seen[id]) continue;
         var name = "";
+        var sub = "";
         try {
-          name = (a.getAttribute("aria-label") || a.textContent || "").replace(/\s+/g, " ").trim();
+          var raw = (a.getAttribute("aria-label") || a.textContent || "").replace(/\s+/g, " ").trim();
+          // Library rows read "Name • Playlist • N songs". Keep only the name
+          // part: a full row string can never be matched against the
+          // curation/submenu rows, so the merge emitted every playlist twice
+          // (once with an id, once without). U+2022 BULLET is the separator;
+          // U+00B7 MIDDLE DOT is legal inside playlist names, so it is not split.
+          var parts = raw.split("•");
+          if (parts.length > 1) {
+            var first = parts[0].replace(/\s+/g, " ").trim();
+            if (first) {
+              sub = raw;
+              raw = first;
+            }
+          }
+          name = raw;
         } catch (e) {}
-        // Library rows often read "Name • Playlist • N songs": keep the name part.
         if (name.length > 80) name = name.slice(0, 80);
         if (!name || name.length < 1) continue;
         // Skip look-alikes that are clearly not user playlists (length guard only;
@@ -2565,13 +2579,14 @@
           var img = row && row.querySelector ? row.querySelector("img") : a.querySelector("img");
           if (img) art = img.currentSrc || img.src || "";
         } catch (e) {}
-        var sub = "";
-        try {
-          if (row && row.textContent) {
-            var full = row.textContent.replace(/\s+/g, " ").trim();
-            if (full.length > name.length && full.length < 160) sub = full;
-          }
-        } catch (e) {}
+        if (!sub) {
+          try {
+            if (row && row.textContent) {
+              var full = row.textContent.replace(/\s+/g, " ").trim();
+              if (full.length > name.length && full.length < 160) sub = full;
+            }
+          } catch (e) {}
+        }
         seen[id] = true;
         out.push({
           id: id,
@@ -2863,15 +2878,23 @@
     try {
       var style = document.createElement("style");
       style.setAttribute("data-spm", "playlist-veil");
-      // The curation form renders in a portal under body, outside #spm-root
-      // — hide it with everything else so our own sheet is never affected.
-      // (Our sheet has no <form>, so the form rule can't touch it.)
+      // The goal is "the user must not see Spotify's menus while we drive
+      // them". `visibility: hidden` also stops a popper from LAYING OUT, which
+      // is fatal here: the curation sheet lives in a tippy root, and if that
+      // never lays out its rows never mount, the sweep finds nothing and the
+      // read silently degrades to the Your Library scrape (the wrong list).
+      //
+      // So: things we do NOT drive are hidden outright; the tippy roots and
+      // the curation list are kept laid out and merely taken off-screen with
+      // `opacity: 0` (still measurable by getClientRects, still clickable
+      // programmatically). `visibility` is inherited, so re-declaring it on
+      // the list wins over its hidden <form>/portal ancestors.
       style.textContent =
-        'div[data-tippy-root], div[role="menu"], div[role="dialog"], ul[role="menu"], form { visibility: hidden !important; }' +
-        '#spm-root div[data-tippy-root], #spm-root div[role="menu"], #spm-root div[role="dialog"], #spm-root ul[role="menu"], #spm-root form { visibility: visible !important; }';
-      // The broad rule above would also hide OUR sheet if it ever used
-      // role=dialog outside #spm-root — it doesn't (sheet lives inside
-      // #spm-root, and the override restores it). Kept minimal + temporary.
+        'div[role="menu"], div[role="dialog"], form { visibility: hidden !important; }' +
+        'div[data-tippy-root] { visibility: visible !important; opacity: 0 !important; }' +
+        '#curation-sheet-list, #curation-sheet-list * { visibility: visible !important; opacity: 0 !important; }' +
+        // Our own UI is inside #spm-root and must never be dimmed or hidden.
+        '#spm-root, #spm-root * { visibility: visible !important; opacity: 1 !important; }';
       (document.head || document.documentElement).appendChild(style);
       playlistVeil = style;
     } catch (e) {
@@ -2945,6 +2968,10 @@
     try {
       prevFocus = document.activeElement;
     } catch (e) {}
+    // The context menu and its "Add to playlist" submenu are tippy poppers too.
+    // Veil now (nothing may flash) — safe because the veil dims poppers rather
+    // than hiding them, and waitVeiled below drops the veil entirely if some
+    // build still refuses to mount a dimmed one.
     playlistVeilStart();
     try {
       var r = anchor.getBoundingClientRect();
@@ -2967,13 +2994,27 @@
         return { reason: reason };
       });
     }
-    return waitFor(function () {
+    // Same safety net as ensureCurationSheet: if the menu will not appear
+    // while veiled, drop the veil and look once more. A visible menu beats a
+    // wrong playlist list.
+    function waitVeiled(fn, ms) {
+      return waitFor(fn, ms, 80).then(function (v) {
+        if (v) return v;
+        if (!playlistVeil) return null;
+        playlistVeilStop();
+        return waitFor(fn, ms, 80).then(function (v2) {
+          if (!v2) playlistVeilStart();
+          return v2;
+        });
+      });
+    }
+    return waitVeiled(function () {
       var menus = songMenus();
       for (var i = 0; i < menus.length; i++) {
         if (menuHasAddItem(menus[i])) return menus;
       }
       return null;
-    }, 1600, 80).then(function (menus) {
+    }, 1600).then(function (menus) {
       if (!menus) {
         return doneClose("menu-unavailable");
       }
@@ -2982,7 +3023,7 @@
         return doneClose("menu-unavailable");
       }
       hover(addItem);
-      return waitFor(function () {
+      return waitVeiled(function () {
         var sub = null;
         try {
           sub = findPlaylistSubmenu();
@@ -2990,14 +3031,14 @@
           sub = null;
         }
         return sub ? sub : null;
-      }, 1600, 80).then(function (sub) {
+      }, 1600).then(function (sub) {
         if (!sub) {
           // Hover alone didn't mount it (focus-driven builds): click the
           // trigger as a fallback, then wait once more.
           try {
             addItem.click();
           } catch (e) {}
-          return waitFor(function () {
+          return waitVeiled(function () {
             var s2 = null;
             try {
               s2 = findPlaylistSubmenu();
@@ -3005,7 +3046,7 @@
               s2 = null;
             }
             return s2 ? s2 : null;
-          }, 1200, 80).then(function (sub2) {
+          }, 1200).then(function (sub2) {
             if (!sub2) return doneClose("submenu-unavailable");
             var rows = readAddSubmenuRows();
             if (leaveOpen) return { rows: rows, addItem: addItem, prevFocus: prevFocus };
@@ -3059,10 +3100,15 @@
    *   + [role=search]input[role=searchbox][aria-label="Find a playlist"]
    *   + ul#curation-sheet-list[aria-label="Add to playlist menu"]
    *     > li > button[role=menuitemcheckbox][aria-checked]
-   *       [aria-labelledby="listrow-title-<spotify:collection:tracks|
-   *                              spotify:playlist:<id>|new-playlist>"]
-   *       with p[data-encore-id=listRowTitle] name + img[data-testid=entity-image]
+   *       > div[data-encore-id=listRow][role=group]
+   *           aria-labelledby="listrow-title-<spotify:collection:tracks|
+   *                                 spotify:playlist:<id>|new-playlist>"
+   *         + p[data-encore-id=listRowTitle] id="listrow-title-<same>"
+   *           + img[data-testid=entity-image]
    *   + Cancel button. List is VIRTUALIZED (sentinels) — reads sweep it.
+   *
+   * NOTE: listrow-title-<uri> hangs off the inner listRow div, NOT the
+   * button — rows must be keyed by that, never by button attributes.
    *
    * aria-checked on the rows IS the membership truth (Liked row included),
    * and clicking a row REALLY toggles it — add AND remove from one control,
@@ -3163,11 +3209,32 @@
     }
   }
 
+  // The row's identity lives in `listrow-title-<uri>`, but it is NOT always on
+  // the <button>: current builds put aria-labelledby on the inner
+  // div[data-encore-id="listRow"][role="group"] and leave the button bare.
+  // Same dual shape as the device rows (rowKey), so resolve the same way:
+  // own aria-labelledby -> nested one -> the title element's own id.
   function curationRowUri(btn) {
+    // Ids are base62 on open.spotify.com, but never truncate on a narrower class:
+  // `-`/`_` appear in playlist ids surfaced by other surfaces (and would
+  // silently yield a wrong id + href). Matches parsePlaylistHref's class.
+  var re = /listrow-title-(spotify:(?:collection:tracks|playlist:[A-Za-z0-9_-]+)|new-playlist)/;
+    if (!btn || !btn.getAttribute) return "";
     try {
-      var labelled = btn.getAttribute("aria-labelledby") || "";
-      var m = labelled.match(/listrow-title-(spotify:(?:collection:tracks|playlist:[A-Za-z0-9]+)|new-playlist)/);
+      var m = (btn.getAttribute("aria-labelledby") || "").match(re);
       if (m) return m[1];
+      if (btn.querySelectorAll) {
+        var nested = btn.querySelectorAll("[aria-labelledby]");
+        for (var i = 0; i < nested.length; i++) {
+          var m2 = (nested[i].getAttribute("aria-labelledby") || "").match(re);
+          if (m2) return m2[1];
+        }
+      }
+      var title = btn.querySelector('p[data-encore-id="listRowTitle"]');
+      if (title && title.id && title.id.indexOf("listrow-title-") === 0) {
+        var m3 = title.id.match(re);
+        if (m3) return m3[1];
+      }
     } catch (e) {}
     return "";
   }
@@ -3178,7 +3245,7 @@
     var isLiked = uri === CURATION.likedUri;
     var id = "";
     if (!isLiked) {
-      var m = uri.match(/spotify:playlist:([A-Za-z0-9]+)/);
+      var m = uri.match(/spotify:playlist:([A-Za-z0-9_-]+)/);
       id = m ? m[1] : uri;
     } else {
       id = "__liked__";
@@ -3479,16 +3546,20 @@
 
   // Stages one row click (checkbox visual flip). Resolves true when the
   // row's aria-checked visibly flips (staging, not yet committed).
+  // Re-resolved by URI, never by the raw aria-labelledby string: the row is a
+  // fresh node after React re-renders, and the attribute lives on different
+  // elements across builds (see curationRowUri).
   function stageRowClick(rowEl, wantState) {
     try {
       rowEl.click();
     } catch (e) {
       return Promise.resolve(false);
     }
-    var labelled = "";
+    var wantUri = "";
     try {
-      labelled = rowEl.getAttribute("aria-labelledby") || "";
+      wantUri = curationRowUri(rowEl);
     } catch (e) {}
+    if (!wantUri) return Promise.resolve(false);
     return waitFor(function () {
       var cur = null;
       try {
@@ -3499,12 +3570,10 @@
           : [];
         for (var i = 0; i < all.length; i++) {
           if (isInOurRoot(all[i])) continue;
-          try {
-            if ((all[i].getAttribute("aria-labelledby") || "") === labelled) {
-              cur = all[i];
-              break;
-            }
-          } catch (e) {}
+          if (curationRowUri(all[i]) === wantUri) {
+            cur = all[i];
+            break;
+          }
         }
       } catch (e) {
         cur = null;
@@ -3530,7 +3599,23 @@
     try {
       prevFocus = document.activeElement;
     } catch (e) {}
+    // The sheet lives in a tippy popper. A popper that cannot LAY OUT never
+    // mounts its rows, and then the sweep finds nothing and the caller
+    // silently degrades to the Your Library scrape — the wrong playlist list.
+    // So we do veil from the start (nothing may flash), but the veil only dims
+    // tippy roots instead of hiding them (see playlistVeilStart).
     playlistVeilStart();
+    // Safety net: if the sheet still will not appear, some build is refusing
+    // to mount a dimmed popper. Drop the veil entirely and look once more
+    // before giving up — a visible sheet beats a wrong list.
+    function retryUnveiled() {
+      if (!playlistVeil) return waitSheet(2500);
+      playlistVeilStop();
+      return waitSheet(2500).then(function (found2) {
+        if (!found2) playlistVeilStart();
+        return found2;
+      });
+    }
     function buttonChecked() {
       var b = null;
       try {
@@ -3577,7 +3662,10 @@
     if (first === true) {
       clickButton();
       return waitSheet().then(function (found) {
-        if (!found) return fail("sheet-unavailable");
+        if (!found) return retryUnveiled().then(function (found2) {
+          if (!found2) return fail("sheet-unavailable");
+          return { transient: false, prevFocus: prevFocus };
+        });
         return { transient: false, prevFocus: prevFocus };
       });
     }
@@ -3591,15 +3679,20 @@
       clickButton();
       return waitSheet().then(function (found) {
         if (!found) {
-          // Sheet didn't open with a transient Like outstanding: take it
-          // back via the symmetric toggle if there is one, else report the
-          // leak explicitly (never silently keep it).
-          return restoreTransientLike().then(function (restored) {
-            if (restored) return fail("sheet-unavailable");
-            return fail("sheet-unavailable-transient");
-          });
+          found = retryUnveiled();
         }
-        return { transient: true, prevFocus: prevFocus };
+        return Promise.resolve(found).then(function (found2) {
+          if (!found2) {
+            // Sheet didn't open with a transient Like outstanding: take it
+            // back via the symmetric toggle if there is one, else report the
+            // leak explicitly (never silently keep it).
+            return restoreTransientLike().then(function (restored) {
+              if (restored) return fail("sheet-unavailable");
+              return fail("sheet-unavailable-transient");
+            });
+          }
+          return { transient: true, prevFocus: prevFocus };
+        });
       });
     });
   }
@@ -3883,8 +3976,11 @@
           break;
         }
       }
-      // Transient Like that is NOT being explicitly unliked stays kept.
-      var keepTransient = transient && !(likedTarget && likedTarget.want === false);
+      // The transient Like is only the price of OPENING Spotify's sheet. Keep
+      // it solely when this draft actually asks for Liked Songs; otherwise it
+      // must be handed back before the commit, exactly like curationToggle.
+      // (Keeping it for a plain playlist draft silently liked the track.)
+      var keepTransient = transient && !!likedTarget && likedTarget.want === true;
       function findRowFor(t) {
         var rows = [];
         try {
@@ -4016,9 +4112,18 @@
           });
         }
         if (!transient || keepTransient) return commitNow();
-        // Fold the transient restore into the same commit.
-        return restoreTransientInSheet().then(function () {
-          return commitNow();
+        // Fold the transient restore into the same commit. If it can't even
+        // stage, commit ours and then hand the Like back via the symmetric
+        // toggle — never silently keep it.
+        return restoreTransientInSheet().then(function (staged) {
+          if (staged && staged.staged) return commitNow();
+          return commitNow().then(function () {
+            return restoreTransientLike();
+          }).then(function () {
+            return getPlaylists({ fresh: false });
+          }).then(function (list) {
+            return { ok: failed.length === 0, failed: failed.slice(), list: list };
+          });
         });
       }
       return next();
@@ -4339,6 +4444,10 @@
       empty: !!playlistCache.empty,
       updatedAt: playlistCache.at,
       trackKey: playlistCache.trackKey,
+      // Which source produced this list. "curation" = Spotify's own
+      // Add-to-playlist sheet (the correct list). Anything else means the
+      // fallback (Your Library scrape) won — i.e. the wrong list.
+      viaCuration: !!playlistCache.viaCuration,
     };
   }
 
