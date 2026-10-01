@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SPM harness — Spotify devices picker</title>
+    <title>SPM harness — Spotify devices + playlists</title>
     <link rel="stylesheet" href="../style.css" />
     <style>
       /* Stand-in for Spotify's own page chrome (never touched by the UI). */
@@ -96,6 +96,128 @@
       .h-status {
         color: #f0d68a;
       }
+      /* Fake Your Library sidebar (real playlist list source). */
+      #fake-library {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 72px;
+        width: 280px;
+        background: #121212;
+        border-right: 1px solid #282828;
+        padding: 12px;
+        overflow: auto;
+      }
+      #fake-library h2 {
+        font-size: 14px;
+        color: #b3b3b3;
+        margin: 0 0 8px;
+      }
+      #fake-library ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #fake-library li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px;
+        border-radius: 6px;
+      }
+      #fake-library a {
+        color: #fff;
+        text-decoration: none;
+        font-size: 13px;
+      }
+      #fake-library img {
+        width: 40px;
+        height: 40px;
+        border-radius: 4px;
+        object-fit: cover;
+        background: #282828;
+      }
+      /* Fake track context menus (Add to playlist / Remove). */
+      #fake-menu-root [role="menu"] {
+        position: fixed;
+        z-index: 50000;
+        min-width: 220px;
+        max-height: 320px;
+        overflow: auto;
+        background: #282828;
+        border: 1px solid #3e3e3e;
+        border-radius: 8px;
+        padding: 6px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+        list-style: none;
+        margin: 0;
+      }
+      #fake-menu-root [role="menuitem"],
+      #fake-menu-root [role="menuitemcheckbox"] {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 4px;
+        color: #fff;
+        font-size: 13px;
+        background: none;
+        border: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      #fake-menu-root [role="menuitem"]:hover,
+      #fake-menu-root [role="menuitemcheckbox"]:hover {
+        background: #3e3e3e;
+      }
+      #fake-menu-root input[type="search"] {
+        width: 100%;
+        margin-bottom: 6px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        border: 1px solid #3e3e3e;
+        background: #181818;
+        color: #fff;
+      }
+      /* Fake curation sheet (primary playlist source). */
+      #curation-form {
+        position: fixed;
+        left: 300px;
+        top: 60px;
+        width: 300px;
+        max-height: 70vh;
+        overflow: auto;
+        background: #282828;
+        border: 1px solid #3e3e3e;
+        border-radius: 12px;
+        padding: 12px;
+        z-index: 50000;
+        color: #fff;
+      }
+      #curation-form ul {
+        list-style: none;
+        margin: 8px 0;
+        padding: 0;
+      }
+      #curation-form button[role="menuitemcheckbox"] {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 6px;
+        background: none;
+        border: 0;
+        color: #fff;
+        cursor: pointer;
+        text-align: left;
+        font-size: 13px;
+      }
+      #curation-form img {
+        width: 32px;
+        height: 32px;
+        border-radius: 4px;
+      }
     </style>
   </head>
   <body>
@@ -105,13 +227,22 @@
       <div id="harness-log"></div>
     </div>
 
+    <!-- ===== Stand-in for Spotify's Your Library (real playlist list) ===== -->
+    <nav id="fake-library" aria-label="Your Library">
+      <h2>Your Library</h2>
+      <ul id="library-list"></ul>
+    </nav>
+    <div id="fake-menu-root"></div>
+
     <!-- ===== Stand-in for Spotify's player bar + Connect picker ===== -->
     <footer id="fake-player" data-testid="now-playing-bar">
       <div data-testid="now-playing-widget">
         <img data-testid="cover-art-image" alt="" width="40" height="40" id="np-cover" />
         <div>
-          <a data-testid="context-item-link" href="/track/harness">Harness Track</a>
-          <button data-testid="add-button" aria-label="Add to Liked Songs">♡</button>
+          <a data-testid="context-item-link" id="np-track-link" href="/track/harness">Harness Track</a>
+          <button data-testid="add-button" id="np-like" aria-label="Add to Liked Songs">♡</button>
+          <!-- Bottom-bar curation button (primary playlist source). -->
+          <button data-encore-id="buttonTertiary" id="np-curation" aria-checked="false" aria-expanded="false" aria-label="Add to Liked Songs">＋</button>
         </div>
       </div>
       <button data-testid="control-button-shuffle" aria-label="Enable shuffle">shuffle</button>
@@ -345,20 +476,666 @@
 
         function sheetShowing() {
           var sheet = document.querySelector("#spm-root .spm-dsheet");
-          return !!sheet && !sheet.hidden;
+          var psheet = document.querySelector("#spm-root .spm-psheet");
+          return (!!sheet && !sheet.hidden) || (!!psheet && !psheet.hidden);
         }
+
+        function psheetShowing() {
+          var psheet = document.querySelector("#spm-root .spm-psheet");
+          return !!psheet && !psheet.hidden;
+        }
+
+        /* ---------------- fake playlists (curation sheet + library + menus) ----------------
+         * Same contract as the real web player (see spotifyAdapter.js notes).
+         * PRIMARY: bottom-bar button[data-encore-id="buttonTertiary"] with
+         * tristate; second click opens form > ul#curation-sheet-list with
+         * button[role="menuitemcheckbox"][aria-checked]
+         * [aria-labelledby="listrow-title-<spotify:collection:tracks|
+         * spotify:playlist:<id>|new-playlist>"], entity-image artwork.
+         * FALLBACK: Your Library links + tippy context menus.
+         * Modes (harness.setPlaylistMode):
+         *   check     — curation rows toggle (real checkbox semantics).
+         *   nocuration— curation button hidden (exercises the tippy fallback).
+         *   pempty    — curation form with only New playlist (empty-state UI).
+         *   perror    — row clicks are swallowed (Spotify rejection -> error toast).
+         *   addonly   — tippy-only legacy: rows carry NO checked state, clicks
+         *               always add; removes then report remove-unavailable.
+         */
+        var PMODE = "check";
+        var curationAvailable = true;
+        var playlists = [
+          { id: "pl-fav", name: "Favorites", artwork: "", canAdd: true },
+          { id: "pl-chill", name: "Chill", artwork: "", canAdd: true },
+          { id: "pl-gym", name: "Gym", artwork: "", canAdd: true },
+          { id: "pl-road", name: "Road Trip", artwork: "", canAdd: true },
+        ];
+        var membership = { harness: { "pl-fav": true, "pl-chill": true } };
+        var likedMap = {};
+        var curTrackId = "harness";
+        var playlistOps = [];
+        var menuRoot = document.getElementById("fake-menu-root");
+        var libraryList = document.getElementById("library-list");
+        var trackLink = document.getElementById("np-track-link");
+        var likeBtn = document.getElementById("np-like");
+        var curationBtn = document.getElementById("np-curation");
+
+        function trackTitle() {
+          return trackLink ? (trackLink.textContent || "").trim() : "";
+        }
+
+        function isLikedHarness() {
+          return !!likedMap[curTrackId];
+        }
+
+        function paintLike() {
+          var liked = isLikedHarness();
+          if (likeBtn) {
+            likeBtn.setAttribute("aria-label", liked ? "Remove from Liked Songs" : "Add to Liked Songs");
+            likeBtn.setAttribute("aria-checked", liked ? "true" : "false");
+            likeBtn.textContent = liked ? "♥" : "♡";
+          }
+          // The curation button mirrors saved state (never clicked by paint).
+          if (curationBtn) {
+            curationBtn.style.display = curationAvailable ? "" : "none";
+            curationBtn.setAttribute("aria-checked", liked ? "true" : "false");
+            curationBtn.setAttribute(
+              "aria-label",
+              liked ? "Add to playlist" : "Add to Liked Songs"
+            );
+            curationBtn.textContent = liked ? "✓" : "＋";
+          }
+        }
+
+        if (likeBtn) {
+          likeBtn.addEventListener("click", function () {
+            likedMap[curTrackId] = !isLikedHarness();
+            paintLike();
+            logLine("[spotify] liked " + curTrackId + " = " + isLikedHarness());
+          });
+        }
+
+        /* Curation form fake: form > title + searchbox + ul#curation-sheet-list
+         * (New playlist row + Liked row + one checkbox row per playlist with
+         * entity-image artwork) + Cancel. Row clicks REALLY toggle membership
+         * (and Liked rows flip likedMap + button state, like Spotify). */
+        var curationFormEl = null;
+
+        function curationRowUri(p) {
+          if (p.id === "__liked__" || p.liked) return "spotify:collection:tracks";
+          return "spotify:playlist:" + p.id;
+        }
+
+        function closeCurationForm() {
+          if (curationFormEl && curationFormEl.parentNode) {
+            curationFormEl.parentNode.removeChild(curationFormEl);
+          }
+          curationFormEl = null;
+        }
+
+        function curationFormOpen() {
+          return !!curationFormEl;
+        }
+
+        function buildCurationForm() {
+          closeCurationForm();
+          var form = document.createElement("form");
+          form.id = "curation-form";
+          var title = document.createElement("div");
+          var tspan = document.createElement("span");
+          tspan.textContent = "Add to playlist";
+          title.appendChild(tspan);
+          form.appendChild(title);
+          var searchWrap = document.createElement("div");
+          searchWrap.setAttribute("role", "search");
+          var search = document.createElement("input");
+          search.type = "search";
+          search.setAttribute("role", "searchbox");
+          search.setAttribute("maxlength", "80");
+          search.placeholder = "Find a playlist";
+          search.setAttribute("aria-label", "Find a playlist");
+          search.addEventListener("input", function () {
+            var q = search.value.toLowerCase();
+            var rows = form.querySelectorAll("li[data-cpl]");
+            for (var i = 0; i < rows.length; i++) {
+              rows[i].style.display =
+                rows[i].textContent.toLowerCase().indexOf(q) === -1 ? "none" : "";
+            }
+          });
+          searchWrap.appendChild(search);
+          form.appendChild(searchWrap);
+          var ul = document.createElement("ul");
+          ul.id = "curation-sheet-list";
+          ul.setAttribute("role", "menu");
+          ul.setAttribute("data-depth", "0");
+          ul.setAttribute("tabindex", "0");
+          ul.setAttribute("aria-label", "Add to playlist menu");
+          // New playlist row (adapter must skip it).
+          var nli = document.createElement("li");
+          nli.setAttribute("role", "presentation");
+          nli.setAttribute("data-depth", "0");
+          var nbtn = document.createElement("button");
+          nbtn.setAttribute("role", "menuitem");
+          nbtn.setAttribute("tabindex", "-1");
+          nbtn.setAttribute("aria-labelledby", "listrow-title-new-playlist");
+          var npt = document.createElement("p");
+          npt.setAttribute("data-encore-id", "listRowTitle");
+          npt.id = "listrow-title-new-playlist";
+          npt.textContent = "New playlist";
+          nbtn.appendChild(npt);
+          nbtn.addEventListener("click", function (e) {
+            e.preventDefault();
+            logLine("[spotify] new playlist (no-op in harness)");
+          });
+          nli.appendChild(nbtn);
+          ul.appendChild(nli);
+          var setsize = PMODE === "pempty" ? 1 : playlists.length + 2;
+          var pos = 2;
+          function leafRow(uri, labelText, art, isLiked, checked) {
+            var li = document.createElement("li");
+            li.setAttribute("role", "presentation");
+            li.setAttribute("data-depth", "0");
+            li.setAttribute("data-cpl", "1");
+            var btn = document.createElement("button");
+            btn.setAttribute("role", "menuitemcheckbox");
+            btn.setAttribute("tabindex", "-1");
+            btn.setAttribute("aria-checked", checked ? "true" : "false");
+            btn.setAttribute("aria-setsize", String(setsize));
+            btn.setAttribute("aria-posinset", String(pos++));
+            btn.setAttribute("aria-labelledby", "listrow-title-" + uri);
+            if (art) {
+              var img = document.createElement("img");
+              img.setAttribute("data-testid", "entity-image");
+              img.alt = labelText;
+              img.src = art;
+              btn.appendChild(img);
+            }
+            var pt = document.createElement("p");
+            pt.setAttribute("data-encore-id", "listRowTitle");
+            pt.id = "listrow-title-" + uri;
+            pt.setAttribute("dir", "auto");
+            var sp = document.createElement("span");
+            sp.textContent = labelText;
+            pt.appendChild(sp);
+            btn.appendChild(pt);
+            var slot = document.createElement("span");
+            slot.setAttribute("data-slot", checked ? "checked" : "empty");
+            btn.appendChild(slot);
+            btn.addEventListener("click", function (e) {
+              e.preventDefault();
+              // STAGED like Spotify: flip the visual only; Done commits,
+              // Cancel reverts (see the Done/Cancel wiring below).
+              var nowChecked = btn.getAttribute("aria-checked") === "true";
+              if (PMODE === "perror") {
+                logLine("[spotify] curation op rejected: " + labelText);
+                return; // no flip -> adapter reports unconfirmed
+              }
+              var next = !nowChecked;
+              btn.setAttribute("aria-checked", next ? "true" : "false");
+              slot.setAttribute("data-slot", next ? "checked" : "empty");
+              playlistOps.push({ playlist: labelText, track: curTrackId, via: "curation-stage" });
+              logLine("[spotify] curation staged " + labelText + " -> " + next);
+            });
+            li.appendChild(btn);
+            ul.appendChild(li);
+          }
+          if (PMODE !== "pempty") {
+            var likedNow = isLikedHarness();
+            leafRow(
+              "spotify:collection:tracks",
+              "Liked Songs",
+              "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+              true,
+              likedNow
+            );
+            playlists.forEach(function (p) {
+              if (p.canAdd === false) return;
+              var has = !!(membership[curTrackId] && membership[curTrackId][p.id]);
+              leafRow(curationRowUri(p), p.name, p.artwork || "", false, has);
+            });
+          }
+          form.appendChild(ul);
+          var cancelWrap = document.createElement("div");
+          var cancel = document.createElement("button");
+          cancel.type = "button";
+          cancel.textContent = "Cancel";
+          cancel.addEventListener("click", function () {
+            // Discard staged visuals: restore from committed truth.
+            revertCurationForm();
+            closeCurationForm();
+            logLine("[spotify] curation closed (cancel)");
+          });
+          cancelWrap.appendChild(cancel);
+          var doneBtn = document.createElement("button");
+          doneBtn.type = "button";
+          doneBtn.textContent = "Done";
+          doneBtn.addEventListener("click", function () {
+            // Commit every staged visual to membership (Spotify saveChanges).
+            commitCurationForm();
+            closeCurationForm();
+            logLine("[spotify] curation closed (done)");
+          });
+          cancelWrap.appendChild(doneBtn);
+          form.appendChild(cancelWrap);
+          document.body.appendChild(form);
+          curationFormEl = form;
+          logLine("[spotify] curation sheet opened");
+        }
+
+        function curationStagedRows() {
+          if (!curationFormEl) return [];
+          var out = [];
+          var btns = curationFormEl.querySelectorAll('button[role="menuitemcheckbox"]');
+          for (var i = 0; i < btns.length; i++) {
+            var labelled = btns[i].getAttribute("aria-labelledby") || "";
+            var m = labelled.match(/listrow-title-(.+)$/);
+            if (!m || m[1] === "new-playlist") continue;
+            out.push({
+              el: btns[i],
+              uri: m[1],
+              checked: btns[i].getAttribute("aria-checked") === "true",
+            });
+          }
+          return out;
+        }
+
+        function commitCurationForm() {
+          var rows = curationStagedRows();
+          for (var i = 0; i < rows.length; i++) {
+            if (rows[i].uri === "spotify:collection:tracks") {
+              likedMap[curTrackId] = rows[i].checked;
+            } else {
+              var pid = String(rows[i].uri).replace(/^spotify:playlist:/, "");
+              membership[curTrackId] = membership[curTrackId] || {};
+              if (rows[i].checked) membership[curTrackId][pid] = true;
+              else delete membership[curTrackId][pid];
+            }
+            playlistOps.push({ playlist: rows[i].uri, track: curTrackId, via: "curation-done" });
+          }
+          paintLike();
+        }
+
+        function revertCurationForm() {
+          var rows = curationStagedRows();
+          for (var i = 0; i < rows.length; i++) {
+            var truth = false;
+            if (rows[i].uri === "spotify:collection:tracks") {
+              truth = !!likedMap[curTrackId];
+            } else {
+              var pid = String(rows[i].uri).replace(/^spotify:playlist:/, "");
+              truth = !!(membership[curTrackId] && membership[curTrackId][pid]);
+            }
+            rows[i].el.setAttribute("aria-checked", truth ? "true" : "false");
+          }
+        }
+
+        document.addEventListener("keydown", function (e) {
+          if ((e.key === "Escape" || e.key === "Esc") && !e.__spmSynthetic) {
+            closeMenus();
+            revertCurationForm();
+            closeCurationForm();
+          }
+        });
+
+        if (curationBtn) {
+          curationBtn.addEventListener("click", function () {
+            if (!curationAvailable) return;
+            if (curationFormOpen()) {
+              closeCurationForm();
+              return;
+            }
+            if (!isLikedHarness()) {
+              // First click transiently Likes (real Spotify behavior).
+              likedMap[curTrackId] = true;
+              paintLike();
+              logLine("[spotify] curation click#1 (transient like)");
+              return;
+            }
+            buildCurationForm();
+          });
+        }
+
+        function renderLibrary() {
+          if (!libraryList) return;
+          libraryList.innerHTML = "";
+          if (PMODE === "pempty" || PMODE === "perror") return;
+          playlists.forEach(function (p) {
+            var li = document.createElement("li");
+            if (p.artwork) {
+              var img = document.createElement("img");
+              img.src = p.artwork;
+              img.alt = "";
+              li.appendChild(img);
+            }
+            var a = document.createElement("a");
+            a.href = "/playlist/" + p.id;
+            a.textContent = p.name + " • Playlist";
+            li.appendChild(a);
+            libraryList.appendChild(li);
+          });
+        }
+
+        function closeMenus() {
+          if (menuRoot) menuRoot.innerHTML = "";
+        }
+
+        document.addEventListener("keydown", function (e) {
+          if (e.key === "Escape" || e.key === "Esc") closeMenus();
+        });
+        document.addEventListener("click", function (e) {
+          if (menuRoot && menuRoot.contains(e.target)) return;
+          if (menuRoot && menuRoot.firstChild) closeMenus();
+        });
+
+        function submenuRows() {
+          if (PMODE === "pempty") return [];
+          return playlists.filter(function (p) {
+            return p.canAdd !== false;
+          });
+        }
+
+        // Mirrors the live tippy structure (see spotifyAdapter.js notes):
+        // song menu = div[data-tippy-root] > ul[role=menu][data-depth="0"]
+        //   with song actions + the li > button[aria-expanded] trigger;
+        // playlist submenu = div[data-tippy-root] > ul[role=menu][data-depth="1"]
+        //   with searchbox li, "New playlist" li, divider, leaf li rows and one
+        //   folder li (button[aria-expanded="false"]) opening depth 2.
+        // The song actions below deliberately echo the real menu ("Save to
+        // your Liked Songs", "Add to queue", …): the adapter must NEVER list
+        // them as playlists (regression test for that exact bug).
+        var SONG_ACTIONS = [
+          "Save to your Liked Songs",
+          "Add to queue",
+          "Go to song radio",
+          "Go to artist",
+          "Go to album",
+          "View credits",
+          "Share",
+        ];
+        var removeContextId = null;
+
+        function leafRow(p, host) {
+          var li = document.createElement("li");
+          li.setAttribute("role", "presentation");
+          var row = document.createElement("button");
+          // Leaf rows carry NO aria-expanded (folders do).
+          row.setAttribute("role", PMODE === "check" ? "menuitemcheckbox" : "menuitem");
+          var inList = !!(membership[curTrackId] && membership[curTrackId][p.id]);
+          if (PMODE === "check") {
+            row.setAttribute("aria-checked", inList ? "true" : "false");
+          }
+          var name = document.createElement("span");
+          name.setAttribute("data-encore-id", "text");
+          name.setAttribute("dir", "auto");
+          name.textContent = p.name;
+          row.appendChild(name);
+          row.setAttribute("data-pl", p.id);
+          row.addEventListener("click", function (e) {
+            e.stopPropagation();
+            playlistOps.push({ playlist: p.name, track: curTrackId });
+            if (PMODE === "perror") {
+              logLine("[spotify] playlist op rejected: " + p.name);
+              return; // menus stay open -> adapter reports unconfirmed
+            }
+            if (PMODE === "addonly") {
+              membership[curTrackId] = membership[curTrackId] || {};
+              membership[curTrackId][p.id] = true;
+              logLine("[spotify] added " + curTrackId + " to " + p.name);
+            } else {
+              membership[curTrackId] = membership[curTrackId] || {};
+              if (membership[curTrackId][p.id]) delete membership[curTrackId][p.id];
+              else membership[curTrackId][p.id] = true;
+              logLine("[spotify] toggled " + curTrackId + " in " + p.name);
+            }
+            closeMenus();
+          });
+          li.appendChild(row);
+          host.appendChild(li);
+        }
+
+        function openDepth2(folderBtn) {
+          closeDepth(2);
+          var tip = document.createElement("div");
+          tip.setAttribute("data-tippy-root", "");
+          var ul = document.createElement("ul");
+          ul.setAttribute("role", "menu");
+          ul.setAttribute("data-depth", "2");
+          ul.setAttribute("tabindex", "-1");
+          var li = document.createElement("li");
+          li.setAttribute("role", "presentation");
+          var row = document.createElement("button");
+          row.setAttribute("role", "menuitem");
+          var name = document.createElement("span");
+          name.setAttribute("data-encore-id", "text");
+          name.setAttribute("dir", "auto");
+          name.textContent = "Chillin Deep";
+          row.appendChild(name);
+          row.addEventListener("click", function (e) {
+            e.stopPropagation();
+            logLine("[spotify] depth-2 click (adapter never descends here)");
+            closeMenus();
+          });
+          li.appendChild(row);
+          ul.appendChild(li);
+          tip.appendChild(ul);
+          menuRoot.appendChild(tip);
+        }
+
+        function closeDepth(depth) {
+          if (!menuRoot) return;
+          var tips = menuRoot.querySelectorAll('[data-tippy-root]');
+          for (var i = 0; i < tips.length; i++) {
+            var ul = tips[i].querySelector('[role="menu"]');
+            if (ul && ul.getAttribute("data-depth") === String(depth)) {
+              tips[i].parentNode.removeChild(tips[i]);
+            }
+          }
+        }
+
+        function openSubmenu(anchorItem) {
+          closeDepth(1);
+          closeDepth(2);
+          var tip = document.createElement("div");
+          tip.setAttribute("data-tippy-root", "");
+          var sub = document.createElement("ul");
+          sub.setAttribute("role", "menu");
+          sub.setAttribute("data-depth", "1");
+          sub.setAttribute("tabindex", "-1");
+          // Search row.
+          var sli = document.createElement("li");
+          sli.setAttribute("role", "presentation");
+          var sbox = document.createElement("div");
+          sbox.setAttribute("role", "menuitem");
+          var search = document.createElement("input");
+          search.type = "search";
+          search.setAttribute("role", "searchbox");
+          search.placeholder = "Find a playlist";
+          search.setAttribute("aria-label", "Find a playlist");
+          search.setAttribute("maxlength", "80");
+          search.addEventListener("input", function () {
+            var q = search.value.toLowerCase();
+            var rows = sub.querySelectorAll("[data-pl]");
+            for (var i = 0; i < rows.length; i++) {
+              var nm = rows[i].textContent.toLowerCase();
+              rows[i].style.display = nm.indexOf(q) === -1 ? "none" : "";
+            }
+          });
+          sbox.appendChild(search);
+          sli.appendChild(sbox);
+          sub.appendChild(sli);
+          // New playlist row.
+          var nli = document.createElement("li");
+          nli.setAttribute("role", "presentation");
+          var fresh = document.createElement("button");
+          fresh.setAttribute("role", "menuitem");
+          fresh.setAttribute("tabindex", "-1");
+          var fspan = document.createElement("span");
+          fspan.setAttribute("data-encore-id", "text");
+          fspan.setAttribute("dir", "auto");
+          fspan.textContent = "New playlist";
+          fresh.appendChild(fspan);
+          fresh.addEventListener("click", function (e) {
+            e.stopPropagation();
+            logLine("[spotify] new playlist (no-op in harness)");
+          });
+          nli.appendChild(fresh);
+          sub.appendChild(nli);
+          var div = document.createElement("div");
+          sub.appendChild(div);
+          // Leaf playlist rows.
+          submenuRows().forEach(function (p) {
+            leafRow(p, sub);
+          });
+          // Folder row (must be skipped by the adapter: aria-expanded!).
+          var fli = document.createElement("li");
+          fli.setAttribute("role", "presentation");
+          var folder = document.createElement("button");
+          folder.setAttribute("role", "menuitem");
+          folder.setAttribute("aria-expanded", "false");
+          folder.setAttribute("tabindex", "-1");
+          var fwrap = document.createElement("span");
+          fwrap.textContent = "Chillin";
+          folder.appendChild(fwrap);
+          function openFolder() {
+            folder.setAttribute("aria-expanded", "true");
+            openDepth2(folder);
+          }
+          folder.addEventListener("mouseover", openFolder);
+          folder.addEventListener("click", openFolder);
+          fli.appendChild(folder);
+          sub.appendChild(fli);
+          tip.appendChild(sub);
+          menuRoot.appendChild(tip);
+          try {
+            if (anchorItem) anchorItem.setAttribute("aria-expanded", "true");
+          } catch (e) {}
+        }
+
+        function openTrackMenu(e) {
+          if (e) {
+            try {
+              e.preventDefault();
+            } catch (err) {}
+          }
+          closeMenus();
+          if (!menuRoot) return;
+          var tip = document.createElement("div");
+          tip.setAttribute("data-tippy-root", "");
+          var menu = document.createElement("ul");
+          menu.setAttribute("role", "menu");
+          menu.setAttribute("data-depth", "0");
+          menu.setAttribute("tabindex", "-1");
+          menu.setAttribute("aria-label", "Track context menu");
+          var add = null;
+          ["Add to playlist"].concat(SONG_ACTIONS).forEach(function (label) {
+            var li = document.createElement("li");
+            li.setAttribute("role", "presentation");
+            var item = document.createElement("button");
+            item.setAttribute("role", "menuitem");
+            item.setAttribute("tabindex", "-1");
+            if (label === "Add to playlist") {
+              item.setAttribute("aria-expanded", "false");
+              add = item;
+            }
+            var span = document.createElement("span");
+            span.textContent = label;
+            item.appendChild(span);
+            if (label === "Add to playlist") {
+              var open = function () {
+                openSubmenu(item);
+              };
+              item.addEventListener("mouseover", open);
+              item.addEventListener("mousemove", function () {
+                if (!menuRoot.querySelector('[data-depth="1"]')) open();
+              });
+              item.addEventListener("focus", open);
+              item.addEventListener("click", open);
+            } else {
+              item.addEventListener("click", function (ev) {
+                ev.stopPropagation();
+                logLine("[spotify] song action (no-op): " + label);
+              });
+            }
+            li.appendChild(item);
+            menu.appendChild(li);
+          });
+          // In-context removal (only when the harness sets a context, like
+          // Spotify showing it only inside an editable playlist).
+          if (removeContextId) {
+            (function () {
+              var li = document.createElement("li");
+              li.setAttribute("role", "presentation");
+              var rm = document.createElement("button");
+              rm.setAttribute("role", "menuitem");
+              rm.setAttribute("tabindex", "-1");
+              rm.textContent = "Remove from this playlist";
+              rm.addEventListener("click", function (ev) {
+                ev.stopPropagation();
+                playlistOps.push({ playlist: "(remove ctx)", track: curTrackId });
+                if (membership[curTrackId]) delete membership[curTrackId][removeContextId];
+                logLine("[spotify] removed " + curTrackId + " from context " + removeContextId);
+                closeMenus();
+              });
+              li.appendChild(rm);
+              menu.appendChild(li);
+            })();
+          }
+          tip.appendChild(menu);
+          menuRoot.appendChild(tip);
+          // Same as Spotify: hovering the entry is enough; also open at once
+          // so keyboard-only flows still mount the list.
+          if (add) openSubmenu(add);
+          logLine("[spotify] context menu opened");
+        }
+
+        if (trackLink) {
+          trackLink.addEventListener("contextmenu", openTrackMenu);
+        }
+
+        function setTrackHarness(id, title) {
+          curTrackId = id || "harness";
+          if (trackLink) {
+            trackLink.setAttribute("href", "/track/" + curTrackId);
+            trackLink.textContent = title || "Harness Track";
+          }
+          closeMenus();
+          closeCurationForm();
+          paintLike();
+          logLine("[harness] track=" + curTrackId);
+        }
+
+        renderLibrary();
+        paintLike();
 
         setInterval(function () {
           if (sheetShowing() && visible(panel)) {
             violations++;
             logLine("[violation] native picker visible while our sheet is open");
           }
+          // The adapter veils Spotify's tippy menus while it reads/clicks;
+          // a VISIBLE menu behind our Save sheet means the veil leaked.
+          if (psheetShowing() && menuRoot) {
+            var tips = menuRoot.querySelectorAll('[data-tippy-root] [role="menu"]');
+            for (var vi = 0; vi < tips.length; vi++) {
+              if (visible(tips[vi])) {
+                violations++;
+                logLine("[violation] native playlist menu visible while our sheet is open");
+                break;
+              }
+            }
+          }
           stateEl.textContent =
             "mode=" + MODE +
+            " pmode=" + PMODE +
+            " track=" + curTrackId +
+            " liked=" + isLikedHarness() +
             " current=" + current.name +
             " devices=" + devices.length +
+            " playlists=" + playlists.length +
+            " membership=" + Object.keys(membership[curTrackId] || {}).length +
+            " curation=" + (curationAvailable ? (curationFormOpen() ? "open" : "shut") : "off") +
             " pickerOpens=" + pickerOpens +
             " transfers=" + transfers.length +
+            " playlistOps=" + playlistOps.length +
             " violations=" + violations;
         }, 40);
 
@@ -414,6 +1191,56 @@
           },
           panelOpen: function () {
             return panel.style.display === "block";
+          },
+          // Playlists (fake Spotify state; the adapter only reads DOM).
+          setPlaylistMode: function (m) {
+            PMODE = m;
+            curationAvailable = m !== "nocuration";
+            renderLibrary();
+            closeMenus();
+            closeCurationForm();
+            paintLike();
+            logLine("[harness] pmode=" + m);
+          },
+          getPlaylistMode: function () {
+            return PMODE;
+          },
+          setPlaylists: function (list) {
+            playlists.length = 0;
+            for (var i = 0; i < list.length; i++) playlists.push(list[i]);
+            renderLibrary();
+            closeMenus();
+          },
+          getMembership: function (trackId) {
+            var t = trackId || curTrackId;
+            return Object.assign({}, membership[t] || {});
+          },
+          setMembership: function (trackId, playlistId, has) {
+            membership[trackId] = membership[trackId] || {};
+            if (has) membership[trackId][playlistId] = true;
+            else delete membership[trackId][playlistId];
+            closeMenus();
+          },
+          setLiked: function (trackId, has) {
+            likedMap[trackId || curTrackId] = !!has;
+            paintLike();
+          },
+          isLiked: isLikedHarness,
+          setTrack: setTrackHarness,
+          curTrack: function () {
+            return curTrackId;
+          },
+          setRemoveContext: function (id) {
+            removeContextId = id || null;
+            closeMenus();
+            logLine("[harness] removeContext=" + removeContextId);
+          },
+          playlistOps: playlistOps,
+          menuOpen: function () {
+            return !!(menuRoot && menuRoot.firstChild);
+          },
+          curationOpen: function () {
+            return curationFormOpen();
           },
         };
         // Nothing is rendered until the picker is opened — same as Spotify.

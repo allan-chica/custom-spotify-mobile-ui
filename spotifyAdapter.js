@@ -1205,6 +1205,12 @@
   }
 
   function isLiked() {
+    // Authoritative first: the bottom-bar curation button's own tristate
+    // (aria-checked false = "Add to Liked Songs", true = saved).
+    try {
+      var cur = curationLikedState();
+      if (cur !== null) return cur;
+    } catch (e) {}
     var btn = findLikeButton();
     if (!btn) return false;
     // Whatever tristate attribute Spotify uses wins over label guessing.
@@ -1455,7 +1461,7 @@
 
   // "/playlist/37i9dQ…?uid=…&uri=…" (or absolute URLs) -> "/playlist/37i9dQ…".
   function contextHrefInfo(href) {
-    var m = String(href || "").match(/\/(playlist|album|artist|show|collection)\/([A-Za-z0-9]+)/);
+    var m = String(href || "").match(/\/(playlist|album|artist|show|collection)\/([A-Za-z0-9_-]+)/);
     if (!m) return null;
     return { kind: m[1], href: "/" + m[1] + "/" + m[2] };
   }
@@ -2353,6 +2359,2268 @@
     };
   }
 
+  /* ---------- Save / Add to Playlist ----------
+   *
+   * REVERSE-ENGINEERING NOTES (shipped web-player bundle + LIVE DOM observed
+   * on open.spotify.com — never guessed):
+   *
+   * - The ONLY Add-to-playlist UI is the track context-menu path:
+   *   menuAction:"add-to-playlist", focusTransferKey:"ADD_TO_PLAYLIST_SUBMENU".
+   * - The song menu holds the trigger:
+   *   button[role="menuitem"][aria-expanded] with a span "Add to playlist"
+   *   (+ caret icon). Hovering/clicking it mounts the playlist submenu.
+   * - The playlist submenu lives in a tippy popover:
+   *   div[data-tippy-root] > ul[role="menu"][data-depth="1"] containing, in
+   *   order: a search row (input[role="searchbox" aria-label="Find a
+   *   playlist" placeholder="Find a playlist"], locale key
+   *   "contextmenu.find-playlist"), a "New playlist" row (locale key
+   *   "...contextmenu.new-playlist"), a divider, then one
+   *   li[role="presentation"] > button[role="menuitem"] per playlist with
+   *   span[data-encore-id="text"] holding the name.
+   * - FOLDERS are rows too, distinguished ONLY by aria-expanded="false" on
+   *   the button (+ caret); the trigger uses aria-expanded="true". LEAF
+   *   playlist rows carry NO aria-expanded attribute at all. Parser skips
+   *   every button with aria-expanded — folders never appear as playlists.
+   * - NO row carries aria-checked or any check glyph (verified on the live
+   *   submenu: bare name buttons throughout): the submenu ALWAYS ADDS
+   *   (playlists allow duplicates), it never toggles. There is no checkbox
+   *   dialog with membership anywhere. The depth-0 song menu ("Save to your
+   *   Liked Songs", "Add to queue", "Go to song radio", …) is a different
+   *   menu and is NEVER parsed as playlists (that confusion was a real bug,
+   *   fixed by anchoring discovery on the Find-a-playlist searchbox, which
+   *   only the depth-1 submenu contains).
+   * - Removal is a SEPARATE menuAction:"delete" item ("contextmenu.
+   *   remove-from-playlist", DELETE shortcut) that only appears when the
+   *   track's menu is opened from inside an editable playlist context.
+   *
+   * Consequences (honest, load-bearing):
+   * - The playlist LIST comes from Spotify's real Your-Library sidebar
+   *   (same source the submenu itself is built from): links to /playlist/
+   *   with real names + artwork — cross-checked against the anchored
+   *   submenu's leaf rows (the addable set). No list is ever invented.
+   * - Membership (containsTrack) is ONLY reported when Spotify itself says
+   *   so: Liked Songs via isLiked(); the playlist the track is currently
+   *   playing from (playback context href); an aria-checked row IF Spotify
+   *   ever ships one (future-proof); or a track we REALLY just added through
+   *   the submenu in this session (a cache of a real action, cleared on
+   *   track change — never a fake database). Anything else shows as ○,
+   *   exactly like Spotify's own submenu (which also offers Add even when
+   *   the track is already there).
+   * - addToPlaylist() clicks the REAL leaf row in the anchored submenu (a
+   *   genuine Spotify add).
+   * - removeFromPlaylist() clicks the REAL toggle-off / Remove item when
+   *   Spotify offers one; otherwise it returns {ok:false,
+   *   reason:"remove-unavailable"} so the UI shows an honest error instead
+   *   of faking a removal. This mirrors Spotify's own capabilities: the web
+   *   build simply does not offer remove-from-arbitrary-playlist.
+   *
+   * Selectors: semantic only — Your-Library region by aria-label/heading
+   * text, playlists by a[href*="/playlist/"] links, the submenu by
+   * role="menu" + the Find-a-playlist searchbox, rows by
+   * li > button[role="menuitem"] without aria-expanded and
+   * span[data-encore-id="text"] for the name. Generated class names
+   * (fmmygDM45MTS7I35OyLh etc.) are never used.
+   */
+
+  var PLAYLIST = {
+    addLabels: [
+      "add to playlist",
+      "add to another playlist",
+      "add playlist to",
+    ],
+    newLabels: ["new playlist", "create playlist", "new-playlist"],
+    findLabels: ["find a playlist", "find playlist", "search playlist"],
+    removeLabels: ["remove from this playlist", "remove from playlist"],
+    likedLabels: ["liked songs"],
+    collectionHref: "/collection/tracks",
+  };
+
+  var playlistCache = { list: [], at: 0, ok: false, reason: "", trackKey: "" };
+  var playlistBusy = null;
+  var playlistSession = { trackKey: "", added: {} }; // playlistKey -> true (real adds only)
+  var playlistVeil = null;
+
+  function trackKeyNow() {
+    try {
+      return currentTrackKey();
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function getCurrentTrackUri() {
+    try {
+      var t = findTrackElement();
+      if (!t) return { uri: "", id: "", kind: "" };
+      var href = t.getAttribute ? t.getAttribute("href") || "" : "";
+      var m = href.match(/\/(track|episode)\/([A-Za-z0-9]+)/);
+      if (!m) return { uri: "", id: "", kind: "" };
+      return {
+        uri: "spotify:" + m[1] + ":" + m[2],
+        id: m[2],
+        kind: m[1],
+        href: "/" + m[1] + "/" + m[2],
+      };
+    } catch (e) {
+      return { uri: "", id: "", kind: "" };
+    }
+  }
+
+  function playlistKeyOf(p) {
+    if (!p) return "";
+    return p.id ? "id:" + p.id : "name:" + norm(p.name);
+  }
+
+  function sessionMarks(keyNow) {
+    if (!keyNow || playlistSession.trackKey !== keyNow) return {};
+    return playlistSession.added || {};
+  }
+
+  function sessionMarkAdded(plKey) {
+    var k = trackKeyNow();
+    if (!k) return;
+    if (playlistSession.trackKey !== k) {
+      playlistSession = { trackKey: k, added: {} };
+    }
+    playlistSession.added[plKey] = true;
+  }
+
+  function sessionUnmark(plKey) {
+    var k = trackKeyNow();
+    if (!k || playlistSession.trackKey !== k) return;
+    try {
+      delete playlistSession.added[plKey];
+    } catch (e) {}
+  }
+
+  // Your-Library region: aria-label first ("Your Library" + locales), then a
+  // heading with that text, then any aside/nav/section holding /playlist/ links.
+  function findLibraryRegion() {
+    var cands = [];
+    try {
+      cands = Array.prototype.slice.call(
+        document.querySelectorAll('aside[aria-label], nav[aria-label], section[aria-label], div[aria-label]')
+      );
+    } catch (e) {
+      cands = [];
+    }
+    for (var i = 0; i < cands.length; i++) {
+      var label = norm(cands[i].getAttribute("aria-label"));
+      if (label.indexOf("your library") !== -1 || label.indexOf("tu biblioteca") !== -1 ||
+          label.indexOf("biblioth") !== -1 || label.indexOf("bibliothek") !== -1) {
+        return cands[i];
+      }
+    }
+    try {
+      var heads = document.querySelectorAll("h1, h2, h3, span, div, button");
+      for (var h = 0; h < heads.length && h < 800; h++) {
+        var txt = norm(heads[h].textContent);
+        if (txt === "your library" || txt === "tu biblioteca") {
+          var scope = heads[h].closest
+            ? heads[h].closest("aside, nav, section, div")
+            : heads[h].parentElement;
+          if (scope) return scope;
+          break;
+        }
+      }
+    } catch (e) {}
+    // Last resort: the document itself (deduped by playlist id below).
+    return document;
+  }
+
+  function parsePlaylistHref(href) {
+    // Real Spotify ids are base62, but be tolerant (tests use hyphens).
+    var m = String(href || "").match(/\/playlist\/([A-Za-z0-9_-]+)/);
+    return m ? m[1] : "";
+  }
+
+  // Sync, non-disruptive read of the real library. No menus are opened here.
+  function readLibraryPlaylists() {
+    var out = [];
+    var seen = {};
+    try {
+      var region = findLibraryRegion();
+      if (!region || !region.querySelectorAll) return out;
+      var links = region.querySelectorAll('a[href*="/playlist/"]');
+      for (var i = 0; i < links.length && out.length < 200; i++) {
+        var a = links[i];
+        var href = "";
+        try {
+          href = a.getAttribute("href") || "";
+        } catch (e) {}
+        var id = parsePlaylistHref(href);
+        if (!id || seen[id]) continue;
+        var name = "";
+        try {
+          name = (a.getAttribute("aria-label") || a.textContent || "").replace(/\s+/g, " ").trim();
+        } catch (e) {}
+        // Library rows often read "Name • Playlist • N songs": keep the name part.
+        if (name.length > 80) name = name.slice(0, 80);
+        if (!name || name.length < 1) continue;
+        // Skip look-alikes that are clearly not user playlists (length guard only;
+        // never invent: if unsure, keep it — the addable check filters later).
+        var row = a.closest ? (a.closest('li[role="listitem"], div[role="listitem"], li, div') || a.parentElement) : a.parentElement;
+        var art = "";
+        try {
+          var img = row && row.querySelector ? row.querySelector("img") : a.querySelector("img");
+          if (img) art = img.currentSrc || img.src || "";
+        } catch (e) {}
+        var sub = "";
+        try {
+          if (row && row.textContent) {
+            var full = row.textContent.replace(/\s+/g, " ").trim();
+            if (full.length > name.length && full.length < 160) sub = full;
+          }
+        } catch (e) {}
+        seen[id] = true;
+        out.push({
+          id: id,
+          uri: "spotify:playlist:" + id,
+          href: "/playlist/" + id,
+          name: name,
+          subtitle: sub && sub !== name ? sub : "",
+          artwork: art || "",
+        });
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function visibleMenus() {
+    var out = [];
+    try {
+      var els = document.querySelectorAll('[role="menu"]');
+      for (var i = 0; i < els.length; i++) {
+        if (isVisible(els[i]) && !isInOurRoot(els[i])) out.push(els[i]);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function isInOurRoot(el) {
+    try {
+      if (!el) return false;
+      if (el.id === "spm-root") return true;
+      return !!(el.closest && el.closest("#spm-root"));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function menuHasAddItem(menu) {
+    try {
+      var txt = norm(menu.textContent);
+      for (var i = 0; i < PLAYLIST.addLabels.length; i++) {
+        if (txt.indexOf(PLAYLIST.addLabels[i]) !== -1) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  // The REAL playlist submenu, observed live (tippy popover):
+  //   div[data-tippy-root] > ul[role="menu"][data-depth="1"] containing
+  //   li > (search row with input[role="searchbox" aria-label="Find a playlist"])
+  //   + li > button "New playlist" + divider + li > button per playlist with
+  //   span[data-encore-id="text"] holding the name.
+  // The searchbox is the anchor: the depth-0 song menu ("Save to your Liked
+  // Songs", "Add to queue", "Go to song radio", …) never contains one, so
+  // anchoring on it makes confusing the two menus impossible. Generated
+  // class names are ignored; only role/structure/labels matter.
+  function submenuSearchBox(menu) {
+    if (!menu || !menu.querySelectorAll) return null;
+    var inputs = [];
+    try {
+      inputs = Array.prototype.slice.call(menu.querySelectorAll("input"));
+    } catch (e) {
+      inputs = [];
+    }
+    for (var i = 0; i < inputs.length; i++) {
+      var label = "";
+      var ph = "";
+      try {
+        label = inputs[i].getAttribute("aria-label") || "";
+        ph = inputs[i].getAttribute("placeholder") || "";
+        var role = inputs[i].getAttribute("role") || inputs[i].type || "";
+        if (role !== "searchbox" && inputs[i].type !== "search" && !label && !ph) continue;
+      } catch (e) {
+        continue;
+      }
+      var hay = norm(label + " " + ph);
+      for (var f = 0; f < PLAYLIST.findLabels.length; f++) {
+        if (hay.indexOf(PLAYLIST.findLabels[f]) !== -1) return inputs[i];
+      }
+    }
+    return null;
+  }
+
+  function isPlaylistSubmenu(menu) {
+    if (!menu || isInOurRoot(menu)) return false;
+    return !!submenuSearchBox(menu);
+  }
+
+  function findPlaylistSubmenu() {
+    var menus = visibleMenus();
+    for (var i = 0; i < menus.length; i++) {
+      if (isPlaylistSubmenu(menus[i])) return menus[i];
+    }
+    // Fallback: an explicitly depth-1 submenu holding a search field of any
+    // kind (locale-proofing if Spotify ever rewords the placeholder).
+    for (var j = 0; j < menus.length; j++) {
+      try {
+        if (menus[j].getAttribute("data-depth") === "1" && menus[j].querySelector("input")) {
+          return menus[j];
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  // Visible menus that are NOT the playlist submenu — i.e. the depth-0 song
+  // menu, home of the "Add to playlist" trigger and "Remove from playlist".
+  function songMenus() {
+    var out = [];
+    var sub = null;
+    try {
+      sub = findPlaylistSubmenu();
+    } catch (e) {
+      sub = null;
+    }
+    var menus = visibleMenus();
+    for (var i = 0; i < menus.length; i++) {
+      if (menus[i] !== sub) out.push(menus[i]);
+    }
+    return out;
+  }
+
+  function findAddMenuItem(scope) {
+    var root = scope || document;
+    var items = [];
+    try {
+      items = Array.prototype.slice.call(
+        root.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="option"], button')
+      );
+    } catch (e) {
+      items = [];
+    }
+    // Strong: an item whose own text STARTS with "add to playlist" (not a
+    // playlist that happens to contain those words deeper in a long label).
+    // Callers scope this to the song menus, never the playlist submenu.
+    for (var i = 0; i < items.length; i++) {
+      if (isInOurRoot(items[i])) continue;
+      var t = "";
+      try {
+        t = norm(items[i].textContent).slice(0, 60);
+      } catch (e) {}
+      for (var a = 0; a < PLAYLIST.addLabels.length; a++) {
+        if (t.indexOf(PLAYLIST.addLabels[a]) === 0) return items[i];
+      }
+    }
+    return null;
+  }
+
+  function findTriggerInSongMenus() {
+    var menus = songMenus();
+    for (var m = 0; m < menus.length; m++) {
+      var hit = findAddMenuItem(menus[m]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function findRemoveMenuItem(scope) {
+    // Scoped to the song menus (never the playlist submenu): a playlist that
+    // happens to be named e.g. "Remove Me" must never match here.
+    var scopes = null;
+    if (scope && scope !== document) {
+      scopes = [scope];
+    } else {
+      try {
+        scopes = songMenus();
+      } catch (e) {
+        scopes = [document];
+      }
+      if (!scopes.length) scopes = [document];
+    }
+    for (var s = 0; s < scopes.length; s++) {
+      var items = [];
+      try {
+        items = Array.prototype.slice.call(
+          scopes[s].querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], button')
+        );
+      } catch (e) {
+        items = [];
+      }
+      for (var i = 0; i < items.length; i++) {
+        if (isInOurRoot(items[i])) continue;
+        var t = "";
+        try {
+          t = norm(items[i].textContent).slice(0, 80);
+        } catch (e) {}
+        for (var r = 0; r < PLAYLIST.removeLabels.length; r++) {
+          if (t.indexOf(PLAYLIST.removeLabels[r]) !== -1) return items[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  // Leaf playlist rows of the anchored depth-1 submenu ONLY. The song menu
+  // is never consulted here (that was the sheet-shows-menu-actions bug).
+  // Observed live structure per row:
+  //   li[role="presentation"] > button[role="menuitem"]
+  //     > span[data-encore-id="text"]PLAYLIST NAME</span>
+  // Skipped, by observation (not by class):
+  // - the search row (a menuitem div holding the searchbox input),
+  // - "New playlist" (plus icon + that text),
+  // - FOLDERS: any button carrying aria-expanded (observed: the "Add to
+  //   playlist" trigger uses aria-expanded="true", a folder row uses
+  //   aria-expanded="false"); leaf playlists carry NO aria-expanded at all.
+  // - the trigger echo, if it ever appears inside the submenu.
+  // Membership marks: the live rows carry NO aria-checked and NO check
+  // glyph — Spotify's submenu is add-only. checked stays null unless a
+  // future build marks rows (code below already honors aria-checked,
+  // aria-selected, and check glyphs if they ever appear).
+  function readAddSubmenuRows() {
+    var rows = [];
+    var menu = null;
+    try {
+      menu = findPlaylistSubmenu();
+    } catch (e) {
+      menu = null;
+    }
+    if (!menu) return rows;
+    var items = [];
+    try {
+      items = Array.prototype.slice.call(
+        menu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="option"]')
+      );
+    } catch (e) {
+      return rows;
+    }
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (isInOurRoot(it)) continue;
+      // Folders/submenu triggers carry aria-expanded; leaf playlists don't.
+      try {
+        if (it.getAttribute && it.getAttribute("aria-expanded") !== null) continue;
+      } catch (e) {}
+      // The search row wraps the searchbox input.
+      try {
+        if (it.querySelector && it.querySelector("input")) continue;
+      } catch (e) {}
+      var txt = "";
+      try {
+        var nameEl = it.querySelector
+          ? it.querySelector('span[data-encore-id="text"]')
+          : null;
+        txt = ((nameEl && nameEl.textContent) || it.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      } catch (e) {}
+      if (!txt || txt.length > 120) continue;
+      var low = norm(txt);
+      var isNew = false;
+      for (var n = 0; n < PLAYLIST.newLabels.length; n++) {
+        if (low.indexOf(PLAYLIST.newLabels[n]) !== -1 && txt.length < 40) {
+          isNew = true;
+          break;
+        }
+      }
+      if (isNew) continue;
+      var isAddHeader = false;
+      for (var a = 0; a < PLAYLIST.addLabels.length; a++) {
+        if (low.indexOf(PLAYLIST.addLabels[a]) === 0 && txt.length < 60) {
+          isAddHeader = true;
+          break;
+        }
+      }
+      if (isAddHeader) continue;
+      if (low.indexOf("find") === 0 && txt.length < 40) continue; // search row echo
+      // Membership marks (future-proof; the live build sets none).
+      var checked = null;
+      try {
+        var ac = it.getAttribute("aria-checked");
+        if (ac !== null) checked = ac === "true";
+        var sel = it.getAttribute("aria-selected");
+        if (checked === null && sel !== null) checked = sel === "true";
+      } catch (e) {}
+      var hasCheck = false;
+      try {
+        var html = (it.innerHTML || "").toLowerCase();
+        if (html.indexOf("polyline") !== -1 && txt.length < 80) {
+          // A polyline glyph inside a short menu row is Spotify's check.
+          hasCheck = true;
+        }
+      } catch (e) {}
+      if (checked === null && hasCheck) checked = true;
+      rows.push({ el: it, name: txt, checked: checked });
+    }
+    return rows;
+  }
+
+  function playlistVeilStart() {
+    if (playlistVeil) return;
+    try {
+      var style = document.createElement("style");
+      style.setAttribute("data-spm", "playlist-veil");
+      // The curation form renders in a portal under body, outside #spm-root
+      // — hide it with everything else so our own sheet is never affected.
+      // (Our sheet has no <form>, so the form rule can't touch it.)
+      style.textContent =
+        'div[data-tippy-root], div[role="menu"], div[role="dialog"], ul[role="menu"], form { visibility: hidden !important; }' +
+        '#spm-root div[data-tippy-root], #spm-root div[role="menu"], #spm-root div[role="dialog"], #spm-root ul[role="menu"], #spm-root form { visibility: visible !important; }';
+      // The broad rule above would also hide OUR sheet if it ever used
+      // role=dialog outside #spm-root — it doesn't (sheet lives inside
+      // #spm-root, and the override restores it). Kept minimal + temporary.
+      (document.head || document.documentElement).appendChild(style);
+      playlistVeil = style;
+    } catch (e) {
+      playlistVeil = null;
+    }
+  }
+
+  function playlistVeilStop() {
+    if (!playlistVeil) return;
+    try {
+      if (playlistVeil.parentNode) playlistVeil.parentNode.removeChild(playlistVeil);
+    } catch (e) {}
+    playlistVeil = null;
+  }
+
+  function closeAllMenus() {
+    // Synthetic Escape dismisses Spotify's own menus. It is marked so our
+    // own sheets (document-level Escape-to-close) never treat it as the user
+    // asking to close: without the mark, every playlist read would instantly
+    // shut the Save sheet that triggered it.
+    function synth(type) {
+      var ev = null;
+      try {
+        ev = new KeyboardEvent(type, { key: "Escape", bubbles: true });
+        ev.__spmSynthetic = true;
+      } catch (e) {
+        ev = null;
+      }
+      if (ev) {
+        try {
+          document.dispatchEvent(ev);
+        } catch (e2) {}
+      }
+    }
+    synth("keydown");
+    synth("keyup");
+    return waitFor(function () {
+      return visibleMenus().length ? null : true;
+    }, 600, 60);
+  }
+
+  function hover(el) {
+    if (!el) return;
+    try {
+      var r = el.getBoundingClientRect();
+      var x = r.left + Math.min(20, r.width / 2);
+      var y = r.top + r.height / 2;
+      ["pointerover", "mouseover", "mousemove"].forEach(function (type) {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+      });
+      el.focus && el.focus();
+    } catch (e) {}
+  }
+
+  // Opens the track's context menu (hidden) and hovers the "Add to
+  // playlist" trigger so the depth-1 tippy submenu mounts. Resolves
+  // { rows, addItem } or { reason }. An EMPTY rows array is a VALID result
+  // (user with no playlists) as long as the anchored submenu mounted.
+  // ALWAYS closes menus + veil before resolving (success or fail), unless
+  // leaveOpen is set — add/remove keep the menus up to click a row, then
+  // close them via finishMenuOp themselves.
+  function openAddSubmenuHidden(leaveOpen) {
+    var anchor = null;
+    try {
+      anchor = findTrackElement() || findWidget();
+    } catch (e) {
+      anchor = null;
+    }
+    if (!anchor) return Promise.resolve({ reason: "no-track" });
+    var prevFocus = null;
+    try {
+      prevFocus = document.activeElement;
+    } catch (e) {}
+    playlistVeilStart();
+    try {
+      var r = anchor.getBoundingClientRect();
+      var cx = r.left + 8;
+      var cy = r.top + 8;
+      anchor.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2 })
+      );
+    } catch (e) {
+      playlistVeilStop();
+      return Promise.resolve({ reason: "menu-failed" });
+    }
+    function doneClose(reason) {
+      if (leaveOpen) return Promise.resolve({ reason: reason, prevFocus: prevFocus });
+      return closeAllMenus().then(function () {
+        playlistVeilStop();
+        try {
+          prevFocus && prevFocus.focus && prevFocus.focus();
+        } catch (e) {}
+        return { reason: reason };
+      });
+    }
+    return waitFor(function () {
+      var menus = songMenus();
+      for (var i = 0; i < menus.length; i++) {
+        if (menuHasAddItem(menus[i])) return menus;
+      }
+      return null;
+    }, 1600, 80).then(function (menus) {
+      if (!menus) {
+        return doneClose("menu-unavailable");
+      }
+      var addItem = findTriggerInSongMenus();
+      if (!addItem) {
+        return doneClose("menu-unavailable");
+      }
+      hover(addItem);
+      return waitFor(function () {
+        var sub = null;
+        try {
+          sub = findPlaylistSubmenu();
+        } catch (e) {
+          sub = null;
+        }
+        return sub ? sub : null;
+      }, 1600, 80).then(function (sub) {
+        if (!sub) {
+          // Hover alone didn't mount it (focus-driven builds): click the
+          // trigger as a fallback, then wait once more.
+          try {
+            addItem.click();
+          } catch (e) {}
+          return waitFor(function () {
+            var s2 = null;
+            try {
+              s2 = findPlaylistSubmenu();
+            } catch (e2) {
+              s2 = null;
+            }
+            return s2 ? s2 : null;
+          }, 1200, 80).then(function (sub2) {
+            if (!sub2) return doneClose("submenu-unavailable");
+            var rows = readAddSubmenuRows();
+            if (leaveOpen) return { rows: rows, addItem: addItem, prevFocus: prevFocus };
+            return closeAllMenus().then(function () {
+              playlistVeilStop();
+              try {
+                prevFocus && prevFocus.focus && prevFocus.focus();
+              } catch (e) {}
+              return { rows: rows, addItem: addItem };
+            });
+          });
+        }
+        var rows = readAddSubmenuRows();
+        if (leaveOpen) return { rows: rows, addItem: addItem, prevFocus: prevFocus };
+        return closeAllMenus().then(function () {
+          playlistVeilStop();
+          try {
+            prevFocus && prevFocus.focus && prevFocus.focus();
+          } catch (e) {}
+          return { rows: rows, addItem: addItem };
+        });
+      });
+    });
+  }
+
+  function finishMenuOp(prevFocus) {
+    return closeAllMenus().then(function () {
+      playlistVeilStop();
+      try {
+        prevFocus && prevFocus.focus && prevFocus.focus();
+      } catch (e) {}
+    });
+  }
+
+  /* ---------- Curation sheet (the REAL checkbox UI) ----------
+   *
+   * Live-observed on open.spotify.com (plus bundle: CurationSheet with
+   * initiallySelectedUris / isSelected / saveChanges — no stable globals to
+   * call; the bundle is webpack closures and content scripts run in an
+   * isolated world anyway, so clicking Spotify's REAL button is the
+   * equivalent: their handler runs, nothing is reimplemented).
+   *
+   * Trigger: bottom-bar
+   *   button[data-encore-id="buttonTertiary"][aria-checked]
+   *   unsaved: aria-checked="false", aria-label="Add to Liked Songs" (+ icon)
+   *   saved:   aria-checked="true",  aria-label="Add to playlist"   (check icon)
+   * Click unsaved -> adds to Liked Songs (NO sheet). Click saved -> opens the
+   * sheet (NO toggle). The button NEVER unlikes directly.
+   *
+   * Sheet: form > [title "Add to playlist"]
+   *   + [role=search]input[role=searchbox][aria-label="Find a playlist"]
+   *   + ul#curation-sheet-list[aria-label="Add to playlist menu"]
+   *     > li > button[role=menuitemcheckbox][aria-checked]
+   *       [aria-labelledby="listrow-title-<spotify:collection:tracks|
+   *                              spotify:playlist:<id>|new-playlist>"]
+   *       with p[data-encore-id=listRowTitle] name + img[data-testid=entity-image]
+   *   + Cancel button. List is VIRTUALIZED (sentinels) — reads sweep it.
+   *
+   * aria-checked on the rows IS the membership truth (Liked row included),
+   * and clicking a row REALLY toggles it — add AND remove from one control,
+   * verified by polling the flip (not by menu-close heuristics).
+   *
+   * Transient-like dance (unsaved tracks only): opening the sheet costs one
+   * real Like (click#1) + open (click#2). Before closing, the sheet's own
+   * Liked row is toggled back off (verified), so the net state change is
+   * exactly zero — Spotify toasts may flash, but no state leaks. The
+   * returned list always reports Liked=false for a transient session.
+   */
+
+  var CURATION = {
+    listId: "curation-sheet-list",
+    listLabel: "add to playlist menu",
+    likedUri: "spotify:collection:tracks",
+    newRow: "new-playlist",
+  };
+
+  // The bottom-bar curation button. Widget first, then the whole player bar.
+  // Recognized by encore-id + tristate + label in BOTH of its states
+  // ("Add to Liked Songs" unsaved / "Add to playlist" saved). Generated
+  // classes are ignored.
+  function findCurationButton() {
+    var scopes = [];
+    try {
+      var w = findWidget();
+      if (w) scopes.push(w);
+      var p = findPlayer();
+      if (p && p !== w) scopes.push(p);
+    } catch (e) {}
+    for (var s = 0; s < scopes.length; s++) {
+      var btns = [];
+      try {
+        btns = Array.prototype.slice.call(
+          scopes[s].querySelectorAll('button[data-encore-id="buttonTertiary"]')
+        );
+      } catch (e) {
+        btns = [];
+      }
+      for (var i = 0; i < btns.length; i++) {
+        var checked = null;
+        var label = "";
+        try {
+          checked = btns[i].getAttribute("aria-checked");
+          label = norm(btns[i].getAttribute("aria-label"));
+        } catch (e) {}
+        if (checked === null) continue;
+        if (label === "add to liked songs" || label === "add to playlist" ||
+            label.indexOf("liked songs") !== -1) {
+          return btns[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  function curationLikedState() {
+    var btn = null;
+    try {
+      btn = findCurationButton();
+    } catch (e) {
+      btn = null;
+    }
+    if (!btn) return null;
+    try {
+      var c = btn.getAttribute("aria-checked");
+      if (c !== null) return c === "true";
+    } catch (e) {}
+    return null;
+  }
+
+  function findCurationList() {
+    var ul = null;
+    try {
+      ul = document.getElementById(CURATION.listId);
+    } catch (e) {
+      ul = null;
+    }
+    if (!ul || isInOurRoot(ul)) return null;
+    try {
+      if (!isVisible(ul)) return null;
+      var label = norm(ul.getAttribute("aria-label"));
+      if (label && label.indexOf(CURATION.listLabel) === -1) return null;
+    } catch (e) {
+      return null;
+    }
+    return ul;
+  }
+
+  function curationFormOf(ul) {
+    try {
+      if (!ul) return null;
+      if (ul.tagName === "FORM") return ul;
+      return ul.closest ? ul.closest("form") : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function curationRowUri(btn) {
+    try {
+      var labelled = btn.getAttribute("aria-labelledby") || "";
+      var m = labelled.match(/listrow-title-(spotify:(?:collection:tracks|playlist:[A-Za-z0-9]+)|new-playlist)/);
+      if (m) return m[1];
+    } catch (e) {}
+    return "";
+  }
+
+  function parseCurationRow(btn) {
+    var uri = curationRowUri(btn);
+    if (!uri || uri === CURATION.newRow) return null;
+    var isLiked = uri === CURATION.likedUri;
+    var id = "";
+    if (!isLiked) {
+      var m = uri.match(/spotify:playlist:([A-Za-z0-9]+)/);
+      id = m ? m[1] : uri;
+    } else {
+      id = "__liked__";
+    }
+    var name = "";
+    try {
+      var title = btn.querySelector('p[data-encore-id="listRowTitle"]');
+      var span = title && title.querySelector ? title.querySelector("span") : null;
+      name = ((span && span.textContent) || (title && title.textContent) || btn.textContent || "")
+        .replace(/\s+/g, " ").trim();
+    } catch (e) {}
+    if (!name) return null;
+    var art = "";
+    try {
+      var img = btn.querySelector('img[data-testid="entity-image"]');
+      if (img) {
+        var best = "";
+        try {
+          var ss = img.getAttribute("srcset") || "";
+          var parts = String(ss).split(",");
+          var bw = 0;
+          for (var i = 0; i < parts.length; i++) {
+            var tok = parts[i].trim().split(/\s+/);
+            var wm = tok.length > 1 ? tok[1].match(/^(\d+)w$/) : null;
+            var w = wm ? parseInt(wm[1], 10) : 0;
+            if (tok[0] && w >= bw) {
+              bw = w;
+              best = tok[0];
+            }
+          }
+        } catch (e2) {}
+        art = best || img.currentSrc || img.src || "";
+      }
+    } catch (e) {}
+    var checked = false;
+    try {
+      checked = btn.getAttribute("aria-checked") === "true";
+    } catch (e) {}
+    return {
+      el: btn,
+      uri: uri,
+      id: id,
+      href: isLiked ? PLAYLIST.collectionHref : "/playlist/" + id,
+      name: name,
+      subtitle: isLiked ? "Liked Songs" : "Playlist",
+      artwork: art || "",
+      containsTrack: !!checked,
+      addable: true,
+      isLikedSongs: isLiked,
+    };
+  }
+
+  function curationLeafRows() {
+    var out = [];
+    var ul = null;
+    try {
+      ul = findCurationList();
+    } catch (e) {
+      ul = null;
+    }
+    if (!ul) return out;
+    var btns = [];
+    try {
+      btns = Array.prototype.slice.call(ul.querySelectorAll('button[role="menuitemcheckbox"]'));
+    } catch (e) {
+      btns = [];
+    }
+    for (var i = 0; i < btns.length; i++) {
+      if (isInOurRoot(btns[i])) continue;
+      // Folders would carry aria-expanded (as in the tippy submenu); the
+      // curation sheet is flat, but guard anyway.
+      try {
+        if (btns[i].getAttribute("aria-expanded") !== null) continue;
+      } catch (e) {}
+      var row = null;
+      try {
+        row = parseCurationRow(btns[i]);
+      } catch (e) {
+        row = null;
+      }
+      if (row) out.push(row);
+    }
+    return out;
+  }
+
+  function setNativeInputValue(input, value) {
+    if (!input) return false;
+    try {
+      var proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) desc.set.call(input, String(value));
+      else input.value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Virtualized sweep: collect rows by URI across scroll positions until the
+  // setsize count is reached (setsize includes the New-playlist row) or the
+  // scroll stops producing new rows. Resolves parsed rows (with live els).
+  function sweepCurationRows() {
+    var byUri = {};
+    var target = 0;
+    var ul = null;
+    try {
+      ul = findCurationList();
+    } catch (e) {
+      ul = null;
+    }
+    if (!ul) return Promise.resolve([]);
+    var form = curationFormOf(ul);
+    var viewport = null;
+    try {
+      viewport =
+        (form && form.querySelector("[data-overlayscrollbars-viewport]")) ||
+        ul.parentElement;
+    } catch (e) {
+      viewport = null;
+    }
+    function collect() {
+      var rows = [];
+      try {
+        rows = curationLeafRows();
+      } catch (e) {
+        rows = [];
+      }
+      for (var i = 0; i < rows.length; i++) {
+        if (!target && rows[i].el) {
+          try {
+            var ss = rows[i].el.getAttribute("aria-setsize");
+            if (ss) target = Math.max(0, parseInt(ss, 10) - 1);
+          } catch (e) {}
+        }
+        if (!byUri[rows[i].uri]) byUri[rows[i].uri] = rows[i];
+      }
+      var n = 0;
+      for (var k in byUri) {
+        if (Object.prototype.hasOwnProperty.call(byUri, k)) n++;
+      }
+      return n;
+    }
+    function toList() {
+      var out = [];
+      for (var k in byUri) {
+        if (Object.prototype.hasOwnProperty.call(byUri, k)) out.push(byUri[k]);
+      }
+      return out;
+    }
+    collect();
+    if (!viewport || !viewport.scrollTo) return Promise.resolve(toList());
+    return new Promise(function (resolve) {
+      var steps = 0;
+      var stale = 0;
+      var lastTop = -1;
+      (function step() {
+        var have = 0;
+        for (var k in byUri) {
+          if (Object.prototype.hasOwnProperty.call(byUri, k)) have++;
+        }
+        if (target && have >= target) return finish();
+        if (steps >= 40) return finish();
+        var top = 0;
+        try {
+          top = viewport.scrollTop || 0;
+        } catch (e) {}
+        if (top === lastTop) stale++;
+        else stale = 0;
+        lastTop = top;
+        if (stale >= 3 && steps > 4) return finish();
+        steps++;
+        try {
+          viewport.scrollTop = top + 500;
+        } catch (e) {}
+        setTimeout(function () {
+          collect();
+          step();
+        }, 110);
+      })();
+      function finish() {
+        try {
+          viewport.scrollTop = 0;
+        } catch (e) {}
+        resolve(toList());
+      }
+    });
+  }
+
+  function curationCancel(form) {
+    var btns = [];
+    try {
+      var scope = form || document;
+      btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+    } catch (e) {
+      btns = [];
+    }
+    for (var i = 0; i < btns.length; i++) {
+      if (isInOurRoot(btns[i])) continue;
+      var t = "";
+      try {
+        t = norm(btns[i].textContent);
+      } catch (e) {}
+      if (t === "cancel") return btns[i];
+    }
+    return null;
+  }
+
+  // Cancel path: discards staged checks (reads and noops). Done path below
+  // commits them — the two must never be confused.
+  function cancelCurationSheet() {
+    var form = null;
+    try {
+      var ul = findCurationList();
+      form = curationFormOf(ul) || (ul && ul.parentElement) || null;
+    } catch (e) {
+      form = null;
+    }
+    var cancel = null;
+    try {
+      cancel = curationCancel(form);
+    } catch (e) {
+      cancel = null;
+    }
+    if (cancel) click(cancel);
+    else {
+      try {
+        var ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+        ev.__spmSynthetic = true;
+        document.dispatchEvent(ev);
+      } catch (e) {}
+    }
+    return waitFor(function () {
+      try {
+        if (findCurationList()) return null;
+      } catch (e) {}
+      return true;
+    }, 1200, 80).then(function () {
+      playlistVeilStop();
+    });
+  }
+
+  // Opens the curation sheet, running the transient-like dance for unsaved
+  // tracks (documented above). Resolves { transient, prevFocus } or
+  // { reason }. ALWAYS veils; on failure the veil is lifted before resolving.
+  // Done path: commits staged checks (Spotify's saveChanges). Resolves
+  // { closed, usedDone }. If no Done button exists, falls back to Cancel
+  // (usedDone:false) — callers then fresh-verify instead of trusting.
+  function saveCurationSheet() {
+    var form = null;
+    try {
+      var ul = findCurationList();
+      form = curationFormOf(ul) || (ul && ul.parentElement) || null;
+    } catch (e) {
+      form = null;
+    }
+    var done = null;
+    try {
+      var btns = (form || document).querySelectorAll
+        ? Array.prototype.slice.call((form || document).querySelectorAll("button"))
+        : [];
+      for (var i = 0; i < btns.length; i++) {
+        if (isInOurRoot(btns[i])) continue;
+        var t = "";
+        try {
+          t = norm(btns[i].textContent);
+        } catch (e) {}
+        if (t === "done") {
+          done = btns[i];
+          break;
+        }
+      }
+    } catch (e) {
+      done = null;
+    }
+    if (!done) {
+      return cancelCurationSheet().then(function () {
+        return { closed: true, usedDone: false };
+      });
+    }
+    click(done);
+    return waitFor(function () {
+      try {
+        if (findCurationList()) return null;
+      } catch (e) {}
+      return true;
+    }, 1500, 80).then(function (gone) {
+      if (gone) {
+        playlistVeilStop();
+        return { closed: true, usedDone: true };
+      }
+      return cancelCurationSheet().then(function () {
+        return { closed: true, usedDone: false };
+      });
+    });
+  }
+
+  // Stages one row click (checkbox visual flip). Resolves true when the
+  // row's aria-checked visibly flips (staging, not yet committed).
+  function stageRowClick(rowEl, wantState) {
+    try {
+      rowEl.click();
+    } catch (e) {
+      return Promise.resolve(false);
+    }
+    var labelled = "";
+    try {
+      labelled = rowEl.getAttribute("aria-labelledby") || "";
+    } catch (e) {}
+    return waitFor(function () {
+      var cur = null;
+      try {
+        var all = document.querySelectorAll
+          ? Array.prototype.slice.call(
+              document.querySelectorAll('button[role="menuitemcheckbox"]')
+            )
+          : [];
+        for (var i = 0; i < all.length; i++) {
+          if (isInOurRoot(all[i])) continue;
+          try {
+            if ((all[i].getAttribute("aria-labelledby") || "") === labelled) {
+              cur = all[i];
+              break;
+            }
+          } catch (e) {}
+        }
+      } catch (e) {
+        cur = null;
+      }
+      if (!cur) return null;
+      try {
+        return (cur.getAttribute("aria-checked") === "true") === !!wantState ? true : null;
+      } catch (e) {
+        return null;
+      }
+    }, 2000, 100);
+  }
+
+  function ensureCurationSheet() {
+    var btn = null;
+    try {
+      btn = findCurationButton();
+    } catch (e) {
+      btn = null;
+    }
+    if (!btn) return Promise.resolve({ reason: "no-curation-button" });
+    var prevFocus = null;
+    try {
+      prevFocus = document.activeElement;
+    } catch (e) {}
+    playlistVeilStart();
+    function buttonChecked() {
+      var b = null;
+      try {
+        b = findCurationButton();
+      } catch (e) {
+        b = null;
+      }
+      if (!b) return null;
+      try {
+        var c = b.getAttribute("aria-checked");
+        return c === null ? null : c === "true";
+      } catch (e) {
+        return null;
+      }
+    }
+    function clickButton() {
+      var b = null;
+      try {
+        b = findCurationButton();
+      } catch (e) {
+        b = null;
+      }
+      if (!b) return false;
+      return click(b);
+    }
+    function waitSheet(timeout) {
+      return waitFor(function () {
+        try {
+          return findCurationList() ? true : null;
+        } catch (e) {
+          return null;
+        }
+      }, timeout || 2000, 80);
+    }
+    function fail(reason) {
+      playlistVeilStop();
+      try {
+        prevFocus && prevFocus.focus && prevFocus.focus();
+      } catch (e) {}
+      return { reason: reason };
+    }
+    var first = buttonChecked();
+    if (first === null) return Promise.resolve(fail("no-curation-button"));
+    if (first === true) {
+      clickButton();
+      return waitSheet().then(function (found) {
+        if (!found) return fail("sheet-unavailable");
+        return { transient: false, prevFocus: prevFocus };
+      });
+    }
+    // Unsaved: click#1 really Likes (transient), click#2 opens the sheet.
+    clickButton();
+    return waitFor(function () {
+      var c = buttonChecked();
+      return c === true ? true : null;
+    }, 2000, 80).then(function (liked) {
+      if (!liked) return fail("like-failed");
+      clickButton();
+      return waitSheet().then(function (found) {
+        if (!found) {
+          // Sheet didn't open with a transient Like outstanding: take it
+          // back via the symmetric toggle if there is one, else report the
+          // leak explicitly (never silently keep it).
+          return restoreTransientLike().then(function (restored) {
+            if (restored) return fail("sheet-unavailable");
+            return fail("sheet-unavailable-transient");
+          });
+        }
+        return { transient: true, prevFocus: prevFocus };
+      });
+    });
+  }
+
+  // Takes back a transient Like using the symmetric toggle when available.
+  // Resolves true when the curation button reads unchecked afterwards.
+  // Never clicks the curation button here: in saved state it opens the
+  // sheet instead of unliking.
+  function restoreTransientLike() {
+    var sym = null;
+    try {
+      sym = findLikeButton();
+    } catch (e) {
+      sym = null;
+    }
+    if (sym) click(sym);
+    return waitFor(function () {
+      var c = null;
+      try {
+        c = curationLikedState();
+      } catch (e) {}
+      return c === false ? true : null;
+    }, 1500, 80);
+  }
+
+  // Restores a transient Like from INSIDE the open sheet via its own Liked
+  // row (the reliable path — the button itself can't unlike while saved).
+  // Stages the transient-Like restore INSIDE the open sheet (flips the
+  // Liked row visual off). Committing happens once via Done by the caller.
+  // Resolves { staged } — never closes anything.
+  function restoreTransientInSheet() {
+    var rows = [];
+    try {
+      rows = curationLeafRows();
+    } catch (e) {
+      rows = [];
+    }
+    var liked = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].isLikedSongs) {
+        liked = rows[i];
+        break;
+      }
+    }
+    if (!liked) return Promise.resolve({ staged: false });
+    if (!liked.containsTrack) return Promise.resolve({ staged: true });
+    return stageRowClick(liked.el, false).then(function (staged) {
+      return { staged: !!staged };
+    });
+  }
+
+  // Cancel-close (discards staging): for reads and noops.
+  function finishCurationOp(prevFocus) {
+    return cancelCurationSheet().then(function () {
+      try {
+        prevFocus && prevFocus.focus && prevFocus.focus();
+      } catch (e) {}
+    });
+  }
+
+  // Done-commit close: for staged changes. Resolves { closed, usedDone }.
+  function finishCurationSave(prevFocus) {
+    return saveCurationSheet().then(function (res) {
+      try {
+        prevFocus && prevFocus.focus && prevFocus.focus();
+      } catch (e) {}
+      return res;
+    });
+  }
+
+  // Full read: open (dance if needed) -> sweep -> restore transient via
+  // Done-commit -> return. Resolves { list } or { reason }. Reads stage
+  // nothing, so the non-transient path Cancel-closes (nothing to discard).
+  function curationRead() {
+    return ensureCurationSheet().then(function (opened) {
+      if (!opened || opened.reason) return opened;
+      var transient = !!opened.transient;
+      var prevFocus = opened.prevFocus;
+      return sweepCurationRows().then(function (rows) {
+        var list = [];
+        for (var i = 0; i < (rows || []).length; i++) {
+          var r = rows[i];
+          list.push({
+            id: r.id,
+            uri: r.uri,
+            href: r.href,
+            name: r.name,
+            subtitle: r.subtitle,
+            artwork: r.artwork,
+            containsTrack: transient && r.isLikedSongs ? false : !!r.containsTrack,
+            addable: true,
+            isLikedSongs: !!r.isLikedSongs,
+          });
+        }
+        // Liked Songs first (pinned in Spotify's sheet too).
+        list.sort(function (a, b) {
+          if (!!a.isLikedSongs === !!b.isLikedSongs) return 0;
+          return a.isLikedSongs ? -1 : 1;
+        });
+        if (!transient) {
+          return finishCurationOp(prevFocus).then(function () {
+            return { list: list };
+          });
+        }
+        // Commit the transient restore through Done (Cancel would discard
+        // the unlike and leak a Like).
+        return restoreTransientInSheet().then(function (staged) {
+          if (!staged || !staged.staged) {
+            return restoreTransientLike().then(function () {
+              return finishCurationOp(prevFocus).then(function () {
+                return { list: list };
+              });
+            });
+          }
+          return finishCurationSave(prevFocus).then(function (commit) {
+            if (commit && commit.usedDone) return { list: list };
+            // No Done: Cancel already closed; verify the unlike stuck.
+            return restoreTransientLike().then(function () {
+              return { list: list };
+            });
+          });
+        });
+      });
+    });
+  }
+
+  // Full toggle for one playlist: open -> find the row (via the sheet's own
+  // searchbox when virtualized away) -> ensure it ends at `want`
+  // (true=add, false=remove, undefined=flip) -> verify -> restore transient
+  // -> close. Resolves { ok, reason?, flippedTo? }.
+  function curationToggle(target, want) {
+    var uri = target && target.uri ? target.uri : "";
+    var name = target && target.name ? target.name : "";
+    if (!uri && !name) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    return ensureCurationSheet().then(function (opened) {
+      if (!opened || opened.reason) {
+        return { ok: false, reason: (opened && opened.reason) || "sheet-unavailable" };
+      }
+      var transient = !!opened.transient;
+      var prevFocus = opened.prevFocus;
+      // Transient Like that IS the desired end state (liking via the sheet):
+      // keep it — restoring would undo exactly what was asked for.
+      var keepTransient =
+        transient && !!target.isLikedSongs && want === true;
+      // finishWith(payload, staged): staged=true means a row visual was
+      // flipped and must be COMMITTED via Done (Cancel would discard it).
+      // Transient restores fold into the same single commit.
+      function finishWith(payload, staged) {
+        if (!staged) {
+          return finishCurationOp(prevFocus).then(function () {
+            return payload;
+          });
+        }
+        function commitAndReport() {
+          return finishCurationSave(prevFocus).then(function (commit) {
+            if (commit && commit.usedDone) {
+              try {
+                var c = findPlaylistInCache({ id: payload.rowId });
+                if (c) c.containsTrack = payload.flippedTo;
+              } catch (e) {}
+              if (payload.flippedTo) sessionMarkAdded(playlistKeyOf({ id: payload.rowId }));
+              else sessionUnmark(playlistKeyOf({ id: payload.rowId }));
+              return { ok: true, flippedTo: payload.flippedTo };
+            }
+            // No Done button: Cancel already closed; fresh-verify whether the
+            // staged click applied immediately (some builds) or was lost.
+            return verifyRowState(payload.uri, payload.flippedTo);
+          });
+        }
+        if (!transient || keepTransient) return commitAndReport();
+        return restoreTransientInSheet().then(function (stagedRestore) {
+          if (stagedRestore && stagedRestore.staged) return commitAndReport();
+          // Restore couldn't even stage: commit ours, then best-effort the
+          // transient back via the symmetric toggle (never silently keep it).
+          return finishCurationSave(prevFocus).then(function () {
+            return restoreTransientLike().then(function () {
+              try {
+                var c2 = findPlaylistInCache({ id: payload.rowId });
+                if (c2) c2.containsTrack = payload.flippedTo;
+              } catch (e2) {}
+              return { ok: true, flippedTo: payload.flippedTo };
+            });
+          });
+        });
+      }
+      // Fresh-verify one row's state (no-Done fallback only): reopen, read,
+      // compare, close. Resolves { ok, flippedTo? } or { ok:false, reason }.
+      function verifyRowState(uri, wantState) {
+        return curationRead().then(function (res) {
+          if (!res || !res.list) return { ok: false, reason: "unconfirmed" };
+          for (var i = 0; i < res.list.length; i++) {
+            if (res.list[i].uri === uri) {
+              if (!!res.list[i].containsTrack === !!wantState) {
+                try {
+                  var c = findPlaylistInCache({ id: res.list[i].id });
+                  if (c) c.containsTrack = wantState;
+                } catch (e) {}
+                return { ok: true, flippedTo: wantState };
+              }
+              return { ok: false, reason: "unconfirmed" };
+            }
+          }
+          return { ok: false, reason: "not-addable" };
+        });
+      }
+      function findRow() {
+        var rows = [];
+        try {
+          rows = curationLeafRows();
+        } catch (e) {
+          rows = [];
+        }
+        for (var i = 0; i < rows.length; i++) {
+          if (uri && rows[i].uri === uri) return rows[i];
+          if (!uri && norm(rows[i].name) === norm(name)) return rows[i];
+        }
+        return null;
+      }
+      function clickRow(r) {
+        var before = !!r.containsTrack;
+        var wantState = want === undefined ? !before : !!want;
+        // Already at the desired state (stale cache race): no click needed.
+        if (wantState === before) {
+          return finishWith({ ok: true, flippedTo: before, noop: true }, false);
+        }
+        return stageRowClick(r.el, wantState).then(function (staged) {
+          if (!staged) {
+            return finishWith({ ok: false, reason: "click-failed" }, false);
+          }
+          r.el = null;
+          return finishWith({ rowId: r.id, uri: r.uri, flippedTo: wantState }, true);
+        });
+      }
+      var row = findRow();
+      if (row) return clickRow(row);
+      // Virtualized away: filter with the sheet's own search, then match.
+      var ul = null;
+      try {
+        ul = findCurationList();
+      } catch (e) {
+        ul = null;
+      }
+      var form = curationFormOf(ul);
+      var box = null;
+      try {
+        box = form && form.querySelector ? form.querySelector('input[role="searchbox"]') : null;
+      } catch (e) {
+        box = null;
+      }
+      if (!box || !name) return finishWith({ ok: false, reason: "not-addable" }, false);
+      setNativeInputValue(box, name);
+      return waitFor(function () {
+        var r = findRow();
+        return r ? r : null;
+      }, 2000, 100).then(function (found) {
+        try {
+          setNativeInputValue(box, "");
+        } catch (e) {}
+        if (!found) return finishWith({ ok: false, reason: "not-addable" }, false);
+        return clickRow(found);
+      });
+    });
+  }
+
+  // Batch draft save (mirrors Spotify's Done): opens once, stages one
+  // click per changed row, commits once via Done, closes. targets =
+  // [{ uri, id, name, isLikedSongs, want }]. Resolves
+  // { ok, failed:[names], list? } — ok only when every change committed.
+  function savePlaylistDraft(targets) {
+    if (!targets || !targets.length) return Promise.resolve({ ok: true, failed: [] });
+    return ensureCurationSheet().then(function (opened) {
+      if (!opened || opened.reason) {
+        return { ok: false, reason: (opened && opened.reason) || "sheet-unavailable", failed: targets.map(function (t) { return t.name; }) };
+      }
+      var transient = !!opened.transient;
+      var prevFocus = opened.prevFocus;
+      var likedTarget = null;
+      for (var li = 0; li < targets.length; li++) {
+        if (targets[li].isLikedSongs) {
+          likedTarget = targets[li];
+          break;
+        }
+      }
+      // Transient Like that is NOT being explicitly unliked stays kept.
+      var keepTransient = transient && !(likedTarget && likedTarget.want === false);
+      function findRowFor(t) {
+        var rows = [];
+        try {
+          rows = curationLeafRows();
+        } catch (e) {
+          rows = [];
+        }
+        for (var i = 0; i < rows.length; i++) {
+          if (t.uri && rows[i].uri === t.uri) return rows[i];
+          if (!t.uri && norm(rows[i].name) === norm(t.name)) return rows[i];
+        }
+        return null;
+      }
+      function ensureVisible(t) {
+        var r = findRowFor(t);
+        if (r) return Promise.resolve(r);
+        var ul = null;
+        try {
+          ul = findCurationList();
+        } catch (e) {
+          ul = null;
+        }
+        var form = curationFormOf(ul);
+        var box = null;
+        try {
+          box = form && form.querySelector ? form.querySelector('input[role="searchbox"]') : null;
+        } catch (e) {
+          box = null;
+        }
+        if (!box || !t.name) return Promise.resolve(null);
+        setNativeInputValue(box, t.name);
+        return waitFor(function () {
+          return findRowFor(t);
+        }, 2000, 100).then(function (found) {
+          try {
+            setNativeInputValue(box, "");
+          } catch (e) {}
+          return found;
+        });
+      }
+      var queue = targets.slice();
+      var failed = [];
+      var stagedUris = [];
+      function next() {
+        if (!queue.length) return commitAll();
+        var t = queue.shift();
+        return ensureVisible(t).then(function (row) {
+          if (!row) {
+            failed.push(t.name);
+            return next();
+          }
+          if (!!row.containsTrack === !!t.want) return next(); // noop
+          return stageRowClick(row.el, !!t.want).then(function (staged) {
+            if (staged) stagedUris.push(t.uri || t.name);
+            else failed.push(t.name);
+            return next();
+          });
+        });
+      }
+      function commitAll() {
+        function reportCommitted(usedDone) {
+          void usedDone;
+          var failedNames = failed.slice();
+          try {
+            var list = playlistCache.list || [];
+            for (var i = 0; i < list.length; i++) {
+              for (var s = 0; s < stagedUris.length; s++) {
+                var su = stagedUris[s];
+                if (list[i].uri === su || list[i].name === su) {
+                  // Refresh from the draft intent (verified via commit).
+                  for (var q = 0; q < targets.length; q++) {
+                    if (targets[q].uri === list[i].uri || targets[q].name === list[i].name) {
+                      list[i].containsTrack = !!targets[q].want;
+                      if (targets[q].want) sessionMarkAdded(playlistKeyOf({ id: list[i].id }));
+                      else sessionUnmark(playlistKeyOf({ id: list[i].id }));
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+          return getPlaylists({ fresh: false }).then(function (list) {
+            return { ok: failedNames.length === 0, failed: failedNames, list: list };
+          });
+        }
+        function commitNow() {
+          return finishCurationSave(prevFocus).then(function (commit) {
+            if (commit && commit.usedDone) return reportCommitted(true);
+            // No Done: Cancel already closed; fresh-verify every staged row.
+            return verifyStaged();
+          });
+        }
+        function verifyStaged() {
+          return curationRead().then(function (res) {
+            var stillBad = failed.slice();
+            if (res && res.list) {
+              for (var i = 0; i < stagedUris.length; i++) {
+                var su = stagedUris[i];
+                var want = null;
+                for (var q = 0; q < targets.length; q++) {
+                  if (targets[q].uri === su || targets[q].name === su) want = !!targets[q].want;
+                }
+                var seen = null;
+                for (var j = 0; j < res.list.length; j++) {
+                  if (res.list[j].uri === su || res.list[j].name === su) {
+                    seen = res.list[j];
+                    break;
+                  }
+                }
+                var okRow = seen && !!seen.containsTrack === (want === null ? true : want);
+                var nm = seen ? seen.name : su;
+                if (okRow) {
+                  try {
+                    var c = findPlaylistInCache({ id: seen.id });
+                    if (c) c.containsTrack = !!seen.containsTrack;
+                  } catch (e) {}
+                } else if (stillBad.indexOf(nm) === -1) {
+                  stillBad.push(nm);
+                }
+              }
+            } else {
+              for (var k = 0; k < stagedUris.length; k++) {
+                if (stillBad.indexOf(stagedUris[k]) === -1) stillBad.push(stagedUris[k]);
+              }
+            }
+            return getPlaylists({ fresh: false }).then(function (list) {
+              return { ok: stillBad.length === 0, failed: stillBad, list: list };
+            });
+          });
+        }
+        if (!transient || keepTransient) return commitNow();
+        // Fold the transient restore into the same commit.
+        return restoreTransientInSheet().then(function () {
+          return commitNow();
+        });
+      }
+      return next();
+    });
+  }
+
+  // Curation-backed fresh read for the cache. Resolves the list, or null
+  // when the sheet path is unavailable (caller falls back to tippy).
+  function readCurationFresh() {
+    var keyNow = trackKeyNow();
+    return curationRead().then(function (res) {
+      if (!res || !res.list) return null;
+      playlistCache = {
+        list: res.list,
+        at: Date.now(),
+        ok: true,
+        reason: "",
+        trackKey: keyNow,
+        empty: res.list.length <= 1,
+        viaCuration: true,
+      };
+      return playlistCache.list;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  // Async Like toggle for controls that can't use the sync path: symmetric
+  // button when present, else the curation sheet's own Liked row (verified).
+  // Resolves { ok, reason? }.
+  function toggleLikeAsync(desire) {
+    var want = desire === undefined ? undefined : !!desire;
+    var actualNow = null;
+    try {
+      actualNow = isLiked();
+    } catch (e) {}
+    if (want !== undefined && actualNow === want) {
+      return Promise.resolve({ ok: true, noop: true });
+    }
+    var sym = null;
+    try {
+      sym = findLikeButton();
+    } catch (e) {
+      sym = null;
+    }
+    if (sym) {
+      var clicked = false;
+      try {
+        clicked = click(sym);
+      } catch (e) {
+        clicked = false;
+      }
+      if (!clicked) return Promise.resolve({ ok: false, reason: "like-unavailable" });
+      var expect = want === undefined ? !actualNow : want;
+      return waitFor(function () {
+        var cur = null;
+        try {
+          cur = isLiked();
+        } catch (e) {}
+        return cur === expect ? true : null;
+      }, 2000, 100).then(function (flipped) {
+        return flipped ? { ok: true } : { ok: false, reason: "unconfirmed" };
+      });
+    }
+    // No symmetric toggle: drive the curation sheet's Liked row. Decide from
+    // the BUTTON's pre-dance truth (the sheet row may carry a transient).
+    var actualBtn = null;
+    try {
+      actualBtn = curationLikedState();
+    } catch (e) {}
+    var wantState = want === undefined ? (actualBtn === null ? undefined : !actualBtn) : want;
+    if (want !== undefined && actualBtn === want) {
+      return Promise.resolve({ ok: true, noop: true });
+    }
+    return curationToggle(
+      { uri: CURATION.likedUri, id: "__liked__", name: "Liked Songs", isLikedSongs: true },
+      wantState
+    ).then(function (res) {
+      if (res && res.ok) return { ok: true };
+      return { ok: false, reason: (res && res.reason) || "like-unavailable" };
+    });
+  }
+
+  function mergePlaylistState(lib, submenuRows, likedNow, contextHref, submenuOk) {
+    var marks = sessionMarks(trackKeyNow());
+    var addableByName = {};
+    var checkedByName = {};
+    // submenuOk: the anchored depth-1 submenu mounted (even with zero rows —
+    // a genuine zero-playlist user). Only then is "not listed" meaningful.
+    var submenuSeen = !!submenuOk;
+    if (submenuRows && submenuRows.length) {
+      submenuSeen = true;
+      for (var s = 0; s < submenuRows.length; s++) {
+        var nm = norm(submenuRows[s].name);
+        addableByName[nm] = true;
+        if (submenuRows[s].checked === true) checkedByName[nm] = true;
+      }
+    }
+    var contextId = parsePlaylistHref(contextHref || "");
+    var out = [];
+    for (var i = 0; i < lib.length; i++) {
+      var p = lib[i];
+      var nm2 = norm(p.name);
+      var contains = false;
+      if (checkedByName[nm2]) contains = true;
+      else if (contextId && p.id === contextId) contains = true;
+      else if (marks[playlistKeyOf(p)]) contains = true;
+      out.push({
+        id: p.id,
+        uri: p.uri,
+        href: p.href,
+        name: p.name,
+        subtitle: p.subtitle || "Playlist",
+        artwork: p.artwork || "",
+        containsTrack: !!contains,
+        addable: submenuSeen ? !!addableByName[nm2] : true,
+        isLikedSongs: false,
+      });
+    }
+    // Playlists visible ONLY in the submenu (e.g. library virtualized and not
+    // yet rendered) are still real — append them without artwork.
+    if (submenuSeen) {
+      for (var j = 0; j < submenuRows.length; j++) {
+        var rn = submenuRows[j].name;
+        var found = false;
+        for (var k = 0; k < out.length; k++) {
+          if (norm(out[k].name) === norm(rn)) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          out.push({
+            id: "",
+            uri: "",
+            href: "",
+            name: rn,
+            subtitle: "Playlist",
+            artwork: "",
+            containsTrack: submenuRows[j].checked === true,
+            addable: true,
+            isLikedSongs: false,
+          });
+        }
+      }
+    }
+    // Liked Songs is always first: special, heart-synced, never invented.
+    out.unshift({
+      id: "__liked__",
+      uri: "spotify:collection:tracks",
+      href: PLAYLIST.collectionHref,
+      name: "Liked Songs",
+      subtitle: "Playlist • Liked",
+      artwork: "",
+      containsTrack: !!likedNow,
+      addable: true,
+      isLikedSongs: true,
+    });
+    return out;
+  }
+
+  function readPlaylistsFresh() {
+    var keyNow = trackKeyNow();
+    var lib = [];
+    try {
+      lib = readLibraryPlaylists();
+    } catch (e) {
+      lib = [];
+    }
+    var likedNow = false;
+    try {
+      likedNow = isLiked();
+    } catch (e) {}
+    var ctxHref = "";
+    try {
+      var ctx = getPlaybackContext() || {};
+      ctxHref = ctx.href || "";
+    } catch (e) {}
+    // No library rows: either a genuine zero-playlist user (still show the
+    // Liked row — it is independently readable) or a broken/logged-out page
+    // (no track, no like button, no submenu either — report failure so the
+    // UI can show its retry state instead of a misleading single row).
+    if (!lib.length) {
+      return openAddSubmenuHidden().then(function (res) {
+        var rows = res && res.rows ? res.rows : null;
+        var submenuOk = !!(res && !res.reason);
+        return finishMenuOp(null).then(function () {
+          var hasTrack = false;
+          var hasLike = false;
+          try {
+            hasTrack = !!findTrackElement();
+          } catch (e) {}
+          try {
+            hasLike = !!findLikeButton();
+          } catch (e) {}
+          if (!rows && !submenuOk && !hasTrack && !hasLike) {
+            playlistCache = {
+              list: [],
+              at: Date.now(),
+              ok: false,
+              reason: (res && res.reason) || "library-empty",
+              trackKey: keyNow,
+              empty: true,
+              viaCuration: false,
+            };
+            return playlistCache.list;
+          }
+          var merged = mergePlaylistState(lib, rows, likedNow, ctxHref, submenuOk);
+          playlistCache = {
+            list: merged,
+            at: Date.now(),
+            ok: true,
+            reason: submenuOk ? "" : (res && res.reason) || "library-empty",
+            trackKey: keyNow,
+            empty: merged.length <= 1,
+            viaCuration: false,
+          };
+          return playlistCache.list;
+        });
+      });
+    }
+    // Fast path: library already gives a real list. Confirm addable/checked
+    // with ONE hidden submenu open (like Devices' hidden picker read).
+    return openAddSubmenuHidden().then(function (res) {
+      var rows = res && res.rows ? res.rows : null;
+      var submenuOk = !!(res && !res.reason);
+      var reason = res && res.reason ? res.reason : "";
+      return finishMenuOp(null).then(function () {
+        var merged = mergePlaylistState(lib, rows, likedNow, ctxHref, submenuOk);
+        playlistCache = {
+          list: merged,
+          at: Date.now(),
+          ok: true,
+          reason: reason,
+          trackKey: keyNow,
+          empty: merged.length <= 1,
+          viaCuration: false,
+        };
+        return playlistCache.list;
+      });
+    }).catch(function () {
+      var merged2 = mergePlaylistState(lib, null, likedNow, ctxHref);
+      playlistCache = {
+        list: merged2,
+        at: Date.now(),
+        ok: true,
+          reason: "submenu-unavailable",
+          trackKey: keyNow,
+          empty: merged2.length <= 1,
+          viaCuration: false,
+      };
+      try {
+        playlistVeilStop();
+      } catch (e) {}
+      return playlistCache.list;
+    });
+  }
+
+  function getPlaylists(opts) {
+    opts = opts || {};
+    var keyNow = trackKeyNow();
+    var maxAge = typeof opts.maxAge === "number" ? opts.maxAge : 8000;
+    var sameTrack = playlistCache.trackKey === keyNow;
+    if (opts.cached || (!opts.fresh && sameTrack && playlistCache.at && Date.now() - playlistCache.at < maxAge)) {
+      // Re-stamp without reopening anything: the list shape is cached, but
+      // Liked can flip anytime via the heart. Curation-backed lists are
+      // server truth — only the Liked row is re-stamped, never session
+      // marks; tippy-backed lists keep the old merge behavior.
+      try {
+        var likedNow = isLiked();
+        var list = playlistCache.list || [];
+        if (playlistCache.viaCuration) {
+          for (var ci = 0; ci < list.length; ci++) {
+            if (list[ci].isLikedSongs) list[ci].containsTrack = !!likedNow;
+          }
+        } else {
+          var marks = sessionMarks(keyNow);
+          var ctxHref = "";
+          try {
+            ctxHref = (getPlaybackContext() || {}).href || "";
+          } catch (e) {}
+          var contextId = parsePlaylistHref(ctxHref);
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].isLikedSongs) list[i].containsTrack = !!likedNow;
+            else if (contextId && list[i].id === contextId) list[i].containsTrack = true;
+            else if (marks[playlistKeyOf(list[i])]) list[i].containsTrack = true;
+          }
+        }
+      } catch (e) {}
+      return Promise.resolve(playlistCache.list);
+    }
+    if (playlistBusy) return playlistBusy;
+    // Track changed: drop session adds for the old track (never show Track
+    // A's membership for Track B).
+    if (playlistSession.trackKey !== keyNow) {
+      playlistSession = { trackKey: keyNow, added: {} };
+    }
+    // Curation sheet first (exact URIs, artwork, verified checks); the
+    // tippy context-menu path stays as the fallback for builds without it.
+    playlistBusy = readCurationFresh().then(function (list) {
+      if (list && list.length) {
+        playlistBusy = null;
+        return list;
+      }
+      return readPlaylistsFresh().then(function (list2) {
+        playlistBusy = null;
+        return list2 || playlistCache.list;
+      });
+    });
+    return playlistBusy;
+  }
+
+  function getPlaylistsState() {
+    return {
+      list: (playlistCache.list || []).slice(),
+      ok: playlistCache.ok,
+      reason: playlistCache.reason,
+      empty: !!playlistCache.empty,
+      updatedAt: playlistCache.at,
+      trackKey: playlistCache.trackKey,
+    };
+  }
+
+  function findPlaylistInCache(playlist) {
+    var list = playlistCache.list || [];
+    var wantId = playlist && playlist.id;
+    var wantName = norm(playlist && playlist.name);
+    for (var i = 0; i < list.length; i++) {
+      if (wantId && list[i].id === wantId) return list[i];
+      if (!wantId && wantName && norm(list[i].name) === wantName) return list[i];
+    }
+    return null;
+  }
+
+  // Tippy-fallback add (context-menu submenu, add-only rows): kept for builds
+  // without the curation sheet. Callers prefer curationToggle.
+  function tippyAddToPlaylist(playlist) {
+    if (!playlist) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    var targetName = norm(playlist.name);
+    return openAddSubmenuHidden(true).then(function (res) {
+      if (!res || !res.rows) {
+        return finishMenuOp(res && res.prevFocus).then(function () {
+          return { ok: false, reason: (res && res.reason) || "menu-unavailable" };
+        });
+      }
+      var rows = res.rows;
+      var prevFocus = res.prevFocus;
+      if (!rows.length) {
+        return finishMenuOp(prevFocus).then(function () {
+          return { ok: false, reason: "submenu-empty" };
+        });
+      }
+      var hit = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (norm(rows[i].name) === targetName) {
+          hit = rows[i];
+          break;
+        }
+      }
+      if (!hit) {
+        return finishMenuOp(prevFocus).then(function () {
+          return { ok: false, reason: "not-addable" };
+        });
+      }
+        var before = visibleMenus().length;
+        var clicked = false;
+        try {
+          hit.el.click();
+          clicked = true;
+        } catch (e) {
+          clicked = false;
+        }
+        return waitFor(function () {
+          return visibleMenus().length < before ? true : null;
+        }, 900, 60).then(function (closed) {
+          return finishMenuOp(prevFocus).then(function () {
+            if (clicked && closed) {
+              sessionMarkAdded(playlistKeyOf(playlist));
+              try {
+                var c = findPlaylistInCache(playlist);
+                if (c) c.containsTrack = true;
+              } catch (e) {}
+              return getPlaylists({ fresh: false }).then(function (list) {
+                return { ok: true, list: list };
+              });
+            }
+            // Folders are excluded from rows, so an unconfirmed click means
+            // Spotify didn't consume it — never claim success.
+            return { ok: false, reason: clicked ? "unconfirmed" : "click-failed" };
+          });
+        });
+    });
+  }
+
+  // Tippy-fallback remove: checked-row toggle or song-menu Remove item.
+  // Callers prefer curationToggle.
+  function tippyRemoveFromPlaylist(playlist) {
+    if (!playlist) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    var targetName = norm(playlist.name);
+    return openAddSubmenuHidden(true).then(function (res) {
+      var prevFocus = res && res.prevFocus;
+      function settledOk() {
+        sessionUnmark(playlistKeyOf(playlist));
+        try {
+          var c = findPlaylistInCache(playlist);
+          if (c) c.containsTrack = false;
+        } catch (e) {}
+        return getPlaylists({ fresh: false }).then(function (list) {
+          return { ok: true, list: list };
+        });
+      }
+      function tryRemoveItem() {
+        var rm = findRemoveMenuItem(document);
+        if (!rm) {
+          return finishMenuOp(prevFocus).then(function () {
+            return { ok: false, reason: "remove-unavailable" };
+          });
+        }
+        var before = visibleMenus().length;
+        var clicked = false;
+        try {
+          rm.click();
+          clicked = true;
+        } catch (e) {
+          clicked = false;
+        }
+        return waitFor(function () {
+          return visibleMenus().length < before ? true : null;
+        }, 900, 60).then(function (closed) {
+          return finishMenuOp(prevFocus).then(function () {
+            if (clicked && closed) return settledOk();
+            return { ok: false, reason: "remove-unavailable" };
+          });
+        });
+      }
+      if (!res || res.reason) {
+        // Submenu never mounted and menus are already closed: nothing to
+        // click. Report honestly; the UI keeps the ✓ and says so.
+        return Promise.resolve({ ok: false, reason: (res && res.reason) || "remove-unavailable" });
+      }
+      var rows = res.rows || [];
+      for (var i = 0; i < rows.length; i++) {
+        if (norm(rows[i].name) === targetName && rows[i].checked === true) {
+          var before = visibleMenus().length;
+          var clicked = false;
+          try {
+            rows[i].el.click();
+            clicked = true;
+          } catch (e) {}
+          return waitFor(function () {
+            return visibleMenus().length < before ? true : null;
+          }, 900, 60).then(function (closed) {
+            return finishMenuOp(prevFocus).then(function () {
+              if (clicked && closed) return settledOk();
+              return { ok: false, reason: "remove-unavailable" };
+            });
+          });
+        }
+      }
+      // No checked leaf for this playlist: fall back to the Remove item in
+      // the (still open) song menu.
+      return tryRemoveItem();
+    });
+  }
+
+  // Public add/remove: curation sheet first (verified toggle), tippy
+  // context-menu path as fallback. Liked Songs goes through the async
+  // Like toggle (symmetric button when present, else the sheet's own row).
+  function addToPlaylist(playlist) {
+    if (!playlist) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    if (playlist.isLikedSongs || playlist.id === "__liked__") {
+      return toggleLikeAsync(true).then(function (res) {
+        if (res && res.ok) {
+          return getPlaylists({ fresh: false }).then(function (list) {
+            return { ok: true, list: list };
+          });
+        }
+        return res;
+      });
+    }
+    return curationToggle(playlist, true).then(function (res) {
+      if (res && res.ok) {
+        return getPlaylists({ fresh: false }).then(function (list) {
+          return { ok: true, list: list };
+        });
+      }
+      if (res && (res.reason === "no-curation-button" || res.reason === "sheet-unavailable")) {
+        return tippyAddToPlaylist(playlist);
+      }
+      return res;
+    });
+  }
+
+  function removeFromPlaylist(playlist) {
+    if (!playlist) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    if (playlist.isLikedSongs || playlist.id === "__liked__") {
+      return toggleLikeAsync(false).then(function (res) {
+        if (res && res.ok) {
+          return getPlaylists({ fresh: false }).then(function (list) {
+            return { ok: true, list: list };
+          });
+        }
+        return res;
+      });
+    }
+    return curationToggle(playlist, false).then(function (res) {
+      if (res && res.ok) {
+        return getPlaylists({ fresh: false }).then(function (list) {
+          return { ok: true, list: list };
+        });
+      }
+      if (res && (res.reason === "no-curation-button" || res.reason === "sheet-unavailable")) {
+        return tippyRemoveFromPlaylist(playlist);
+      }
+      return res;
+    });
+  }
+
+  function togglePlaylist(playlist) {
+    if (!playlist) return Promise.resolve({ ok: false, reason: "no-playlist" });
+    var cached = findPlaylistInCache(playlist);
+    var contains = cached ? !!cached.containsTrack : !!playlist.containsTrack;
+    if (playlist.isLikedSongs || playlist.id === "__liked__") {
+      return toggleLikeAsync(!contains).then(function (res) {
+        if (res && res.ok) return { ok: true, pending: !(res && res.noop) };
+        return res;
+      });
+    }
+    return (contains ? removeFromPlaylist(playlist) : addToPlaylist(playlist));
+  }
+
+  // Diagnostics: run on a live Spotify tab when the sheet disagrees.
+  // `SpotMobile.spotify.inspectPlaylists()`
+  function inspectPlaylists() {
+    var lib = [];
+    try {
+      lib = readLibraryPlaylists();
+    } catch (e) {}
+    var menus = [];
+    try {
+      menus = visibleMenus().map(function (m) {
+        var items = [];
+        try {
+          items = Array.prototype.slice.call(
+            m.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]'),
+            0,
+            12
+          ).map(function (it) {
+            var ac = null;
+            try {
+              ac = it.getAttribute("aria-checked");
+            } catch (e) {}
+            return { text: (it.textContent || "").slice(0, 80), checked: ac };
+          });
+        } catch (e) {}
+        return { items: items };
+      });
+    } catch (e) {}
+    var rows = [];
+    try {
+      rows = readAddSubmenuRows().map(function (r) {
+        return { name: r.name, checked: r.checked };
+      });
+    } catch (e) {}
+    var curationBtn = null;
+    try {
+      var cb = findCurationButton();
+      if (cb) {
+        curationBtn = {
+          label: cb.getAttribute("aria-label"),
+          checked: cb.getAttribute("aria-checked"),
+        };
+      }
+    } catch (e) {}
+    var curationRows = [];
+    try {
+      curationRows = curationLeafRows().map(function (r) {
+        return { uri: r.uri, name: r.name, checked: r.containsTrack, artwork: !!r.artwork };
+      });
+    } catch (e) {}
+    return {
+      track: getCurrentTrackUri(),
+      trackKey: trackKeyNow(),
+      curationButton: curationBtn,
+      curationOpen: (function () {
+        try {
+          return !!findCurationList();
+        } catch (e) {
+          return false;
+        }
+      })(),
+      curationRows: curationRows,
+      library: lib.map(function (p) {
+        return { id: p.id, name: p.name, artwork: !!p.artwork };
+      }),
+      menus: menus,
+      submenuRows: rows,
+      cached: getPlaylistsState(),
+      session: playlistSession,
+    };
+  }
+
   /* ---------- Change notification ---------- */
 
   function snapshotKey(s) {
@@ -2578,6 +4846,40 @@
       return getDevices({ fresh: true });
     },
     inspectDevices: getDeviceDiagnostics,
+
+    // Save / Add to Playlist: real Spotify state, normalized. Primary source
+    // is the bottom-bar curation sheet (exact URIs, artwork, verified
+    // checkbox toggles); the tippy context-menu path is the fallback.
+    // remove returns {ok:false, reason:"remove-unavailable"} when Spotify
+    // offers no removal instead of faking it.
+    getPlaylists: getPlaylists,
+    getCachedPlaylists: function () {
+      return (playlistCache.list || []).slice();
+    },
+    getPlaylistsState: getPlaylistsState,
+    getPlaylistMembership: function (opts) {
+      return getPlaylists(opts).then(function (list) {
+        return (list || []).map(function (p) {
+          return {
+            id: p.id,
+            uri: p.uri,
+            name: p.name,
+            containsTrack: !!p.containsTrack,
+            isLikedSongs: !!p.isLikedSongs,
+          };
+        });
+      });
+    },
+    refreshPlaylists: function () {
+      return getPlaylists({ fresh: true });
+    },
+    addToPlaylist: addToPlaylist,
+    removeFromPlaylist: removeFromPlaylist,
+    togglePlaylist: togglePlaylist,
+    toggleLikeAsync: toggleLikeAsync,
+    savePlaylistDraft: savePlaylistDraft,
+    inspectPlaylists: inspectPlaylists,
+    getCurrentTrackUri: getCurrentTrackUri,
 
     // Opens the playing-from context the Spotify way: by clicking Spotify's
     // own header link (inside its React tree), so its router handles it as

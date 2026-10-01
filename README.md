@@ -307,6 +307,119 @@ packaged): `node tests/serve.js` then open
 files unmodified, watches for the native panel ever becoming visible behind
 the sheet, and reports picker opens / transfers / violations live.
 
+## Save / Add to Playlist: heart-driven draft sheet over Spotify's curation
+
+The heart IS the playlist control (no separate Save button), mirroring
+Spotify's own button order exactly: tapping it on an unsaved track Likes
+instantly; tapping it on a saved track opens our bottom sheet (same slide-up,
+backdrop, handle, swipe-down, search, light/dark and reduced-motion treatment
+as Devices). The tap branches on Spotify's live liked state, and the heart
+visual itself mirrors the bottom-bar button's tristate.
+
+Spotify stays the source of truth — the sheet is only a presentation layer:
+
+```text
+Spotify playlist state -> adapter -> sheet -> user tap -> adapter -> Spotify row click
+```
+
+Reverse-engineered from Spotify's shipped web-player bundle (never guessed;
+generated class names are never used). Bundle anchor: `CurationSheet` with
+`initiallySelectedUris` / per-row `isSelected` / `saveChanges` — webpack
+closures expose no stable globals (and content scripts run in an isolated
+JS world), so clicking Spotify's real button is the equivalent: its handler
+runs, nothing is reimplemented.
+
+PRIMARY source — bottom-bar curation button + sheet (exact URIs, artwork,
+verified checkbox toggles for add AND remove):
+
+- Trigger: `button[data-encore-id="buttonTertiary"][aria-checked]` in the
+  player bar. Unsaved: `aria-checked="false"`, `aria-label="Add to Liked
+  Songs"` (plus icon) — a click really Likes (no sheet). Saved:
+  `aria-checked="true"`, `aria-label="Add to playlist"` (check icon) — a
+  click opens the sheet (no toggle). The button never unlikes directly, and
+  its tristate is what `isLiked()` (and hence our heart) mirrors.
+- Sheet: `form` with title `Add to playlist`, search
+  `input[role="searchbox"][aria-label="Find a playlist"]`, and
+  `ul#curation-sheet-list[aria-label="Add to playlist menu"]` holding
+  `li > button[role="menuitemcheckbox"][aria-checked]` rows whose
+  `aria-labelledby="listrow-title-<spotify:collection:tracks|
+  spotify:playlist:<id>|new-playlist>"` gives exact identity (no name
+  matching), with `p[data-encore-id="listRowTitle"]` names and
+  `img[data-testid="entity-image"]` artwork, plus a Cancel button. The list
+  is virtualized — reads sweep it via the sheet's own scroll viewport.
+- `aria-checked` on the rows IS the membership truth (Liked included);
+  clicking a row really toggles it, verified by polling the flip.
+- Unsaved tracks need a transient-like dance to open the sheet (click#1
+  Likes for real, click#2 opens); before closing, the sheet's own Liked row
+  is toggled back off (verified), so the net state change is exactly zero.
+
+FALLBACK source — tippy context menu (add-only, no membership marks): the
+song menu holds the `Add to playlist` trigger (`button[role="menuitem"]
+[aria-expanded]`), whose hover mounts `div[data-tippy-root] >
+ul[role="menu"][data-depth="1"]` with the same `Find a playlist` searchbox, a
+`New playlist` row, and leaf `button[role="menuitem"]` rows (folders carry
+`aria-expanded` and are skipped; leafs carry none). Discovery anchors on the
+searchbox, so the depth-0 song menu (`Save to your Liked Songs`, `Add to
+queue`, …) can never leak into the list.
+
+Honest consequences (load-bearing, see `spotifyAdapter.js` header):
+
+- List = the curation sheet's real rows (exact URIs, real names + artwork).
+  Nothing invented. The tippy submenu + Your-Library sidebar stay as the
+  fallback for builds without the curation button.
+- Membership (`containsTrack`) is the rows' own `aria-checked` — including
+  the Liked Songs row, which stays in sync with the heart through the same
+  tristate.
+- Our sheet stages like Spotify's: row taps only flip the draft; Done diffs
+  it against the server truth loaded at open and commits every change through
+  Spotify's real rows in one batch (verified per row, committed via their
+  Done); Cancel/backdrop/swipe/Escape discards. Unchecking everything —
+  including Liked Songs — and hitting Done unlikes the track, so the heart
+  correctly unfills via the next snapshot.
+- `addToPlaylist()` / `removeFromPlaylist()` drive the verified curation
+  toggle (falling back to the tippy submenu / song-menu Remove item); a row
+  that can't be flipped returns `{ok:false, reason:"…"}` so the UI shows
+  `Couldn't update playlist` instead of faking it.
+- Reads open Spotify's UI hidden (temporary veil, like Devices) and always
+  close it + restore focus; synthetic dismissals carry a mark our own sheets
+  ignore (otherwise every read would shut the sheet that asked for it —
+  caught by the jsdom smoke test, not by inspection).
+- Refresh is event-driven (open, track change, like change, user action).
+  Deliberately NO timer: opening Spotify's UI steals focus, so polling
+  would fight the user (unlike Devices, whose picker read is focus-safe).
+
+Playlist API (all Spotify DOM access stays in the adapter):
+
+```js
+SpotMobile.spotify.getPlaylists()          // fresh read (8s cache, single-flight)
+SpotMobile.spotify.getCachedPlaylists()    // last known list, no round-trip
+SpotMobile.spotify.getPlaylistMembership() // [{ id, uri, name, containsTrack, isLikedSongs }]
+SpotMobile.spotify.refreshPlaylists()      // force a fresh read
+SpotMobile.spotify.getPlaylistsState()     // { list, ok, reason, empty, updatedAt, trackKey }
+SpotMobile.spotify.addToPlaylist(pl)       // verified curation toggle -> { ok, reason?, list? }
+SpotMobile.spotify.removeFromPlaylist(pl)  // verified curation toggle, or { ok:false, reason:"…" }
+SpotMobile.spotify.togglePlaylist(pl)      // add or remove by current membership
+SpotMobile.spotify.toggleLikeAsync(want)   // symmetric button, else sheet's Liked row
+SpotMobile.spotify.savePlaylistDraft(changes) // [{uri,id,name,isLikedSongs,want}] -> {ok,failed,list}
+SpotMobile.spotify.inspectPlaylists()      // diagnostics: curation button/rows + cache
+```
+
+Diagnostics (devtools on the Spotify tab):
+
+```js
+SpotMobile.spotify.inspectPlaylists()
+```
+
+The harness models the same contract with modes
+(`harness.setPlaylistMode("check"|"nocuration"|"pempty"|"perror"|"addonly")`):
+curation checkbox toggles (with the real two-click open dance), hidden-button
+tippy fallback, empty sheet, rejected row clicks, and legacy add-only tippy
+rows. A jsdom smoke test (dev only, in the temp dir — not packaged) executes
+Flows A–H against the real adapter + UI files: curation tristate, URIs,
+artwork, transient-dance hygiene, add/remove/multi with verified flips,
+like-sync both directions, sheet open, search filter, track-change reload,
+reopen persistence, Escape + swipe-down close.
+
 ## Mobile scaling: measured, not hardcoded
 
 On phones (Quetta Android) Spotify serves its DESKTOP layout in a wide

@@ -30,6 +30,10 @@
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4z" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>',
     queue:
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
+    search:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><line x1="15.5" y1="15.5" x2="20" y2="20"/></svg>',
+    playlistRow:
+      '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="7" y1="9.5" x2="17" y2="9.5"/><line x1="7" y1="13" x2="17" y2="13"/><line x1="7" y1="16.5" x2="13" y2="16.5"/></svg>',
     devices:
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
     deviceRow:
@@ -151,6 +155,30 @@
       '<div class="spm-dstate" hidden></div>' +
       "</div>" +
       '<p class="spm-dnotice" role="status" hidden></p>' +
+      "</section>" +
+      // --- custom Save / Add-to-Playlist bottom sheet (same pattern as Devices) ---
+      '<div class="spm-pbackdrop" hidden></div>' +
+      '<section class="spm-psheet" role="dialog" aria-modal="true" aria-labelledby="spm-psheet-title" hidden>' +
+      '<div class="spm-pgrab"><span class="spm-phandle" aria-hidden="true"></span></div>' +
+      '<header class="spm-phead">' +
+      '<h3 class="spm-ptitle" id="spm-psheet-title">Add to playlist</h3>' +
+      '<button class="spm-circle spm-pclose" type="button" aria-label="Close playlist picker">' +
+      SVG.chevDown +
+      "</button>" +
+      "</header>" +
+      '<div class="spm-psearch" role="search">' +
+      '<span class="spm-psearch-icon" aria-hidden="true">' + SVG.search + "</span>" +
+      '<input class="spm-psearch-input" type="search" placeholder="Search playlists..." aria-label="Search playlists" autocomplete="off" />' +
+      "</div>" +
+      '<div class="spm-pbody">' +
+      '<ul class="spm-plist"></ul>' +
+      '<div class="spm-pstate" hidden></div>' +
+      "</div>" +
+      '<div class="spm-pfoot">' +
+      '<button class="spm-pcancel" type="button">Cancel</button>' +
+      '<button class="spm-pdone" type="button">Done</button>' +
+      "</div>" +
+      '<p class="spm-pnotice" role="status" hidden></p>' +
       "</section>";
 
     // All queries below are scoped to our own container — never Spotify's DOM.
@@ -206,6 +234,19 @@
     var sheetHead = q(".spm-dhead");
     var sheetBody = q(".spm-dbody");
     var sheetNotice = q(".spm-dnotice");
+    // Save / Add-to-Playlist sheet refs (own layer, same pattern as Devices).
+    var psheetEl = q(".spm-psheet");
+    var pbackdropEl = q(".spm-pbackdrop");
+    var pgrabEl = q(".spm-pgrab");
+    var psheetClose = q(".spm-pclose");
+    var psheetListEl = q(".spm-plist");
+    var psheetState = q(".spm-pstate");
+    var psheetHead = q(".spm-phead");
+    var psheetBody = q(".spm-pbody");
+    var psheetNotice = q(".spm-pnotice");
+    var psheetSearchInput = q(".spm-psearch-input");
+    var psheetCancelBtn = q(".spm-pcancel");
+    var psheetDoneBtn = q(".spm-pdone");
 
     var collapsed = false;
     var seeking = false;
@@ -257,7 +298,10 @@
     }
 
     function applyEnvironment() {
-      if (sheetOpen) return; // frozen while the sheet is up
+      // Frozen while either sheet is up (both open Spotify's own UI behind
+      // the scenes to read state, which shifts the layout for a frame or two).
+      if (typeof sheetOpen !== "undefined" && sheetOpen) return;
+      if (typeof psheetOpen !== "undefined" && psheetOpen) return;
       var info = null;
       try {
         info = spotify.getViewportInfo();
@@ -453,9 +497,34 @@
       pressFeedback(repeatBtn);
       spotify.toggleRepeat();
     });
+    // Heart follows Spotify's own order: unsaved -> tap Likes instantly;
+    // saved -> tap opens OUR playlist sheet (never Spotify's menu). The
+    // decision reads Spotify's LIVE state (not the last snapshot, which can
+    // lag a beat behind external changes); the sheet always loads truth on
+    // open, so a wrong branch self-corrects either way.
+    function heartTap(btn) {
+      pressFeedback(btn);
+      var liked = false;
+      try {
+        liked = !!spotify.isLiked();
+      } catch (e) {
+        liked = !!(lastSnap && lastSnap.liked);
+      }
+      if (liked) {
+        openPSheet();
+        return;
+      }
+      try {
+        if (spotify.toggleLikeAsync) spotify.toggleLikeAsync(true);
+        else spotify.toggleLike();
+      } catch (e) {
+        try {
+          spotify.toggleLike();
+        } catch (e2) {}
+      }
+    }
     likeBtn.addEventListener("click", function () {
-      pressFeedback(likeBtn);
-      spotify.toggleLike();
+      heartTap(likeBtn);
     });
     lyricsBtn.addEventListener("click", function () {
       if (spotify.openLyrics() === false) setStatus("Lyrics is not available right now.");
@@ -518,8 +587,7 @@
     });
     miniLike.addEventListener("click", function (e) {
       if (e && e.stopPropagation) e.stopPropagation();
-      pressFeedback(miniLike);
-      spotify.toggleLike();
+      heartTap(miniLike);
     });
     miniPrev.addEventListener("click", function (e) {
       if (e && e.stopPropagation) e.stopPropagation();
@@ -1845,6 +1913,9 @@
 
     function beginSheet() {
       if (sheetOpen) return;
+      try {
+        if (typeof closePSheet === "function") closePSheet();
+      } catch (e) {}
       sheetOpen = true;
       root.classList.add("spm-dsheet-open");
       sheetEl.hidden = false;
@@ -2109,12 +2180,673 @@
       sheetDrag = null;
     }, true);
     document.addEventListener("keydown", function (e) {
-      if (!sheetOpen) return;
-      if (e.key === "Escape" || e.key === "Esc") {
+      // Adapter-synthesized menu dismissals (marked) are not the user.
+      if (e && e.__spmSynthetic) return;
+      if (e.key !== "Escape" && e.key !== "Esc") return;
+      if (psheetOpen) {
         e.preventDefault();
-        closeSheet();
+        closePSheet();
+        return;
       }
+      if (!sheetOpen) return;
+      e.preventDefault();
+      closeSheet();
     });
+
+    /* ---------- Custom Save / Add-to-Playlist bottom sheet ----------
+     *
+     * Presentation layer only: every playlist fact (names, artwork,
+     * membership) comes from the adapter, which owns ALL Spotify DOM work
+     * (curation sheet first, tippy menus + Your Library as fallback). The
+     * sheet never queries Spotify's DOM.
+     *
+     * Spotify stays the source of truth, and the sheet mimics Spotify's own
+     * draft semantics exactly: row taps only STAGE checks locally; Done
+     * diffs the draft against the server state loaded at open and applies
+     * every change through Spotify's real rows in one commit; Cancel (or
+     * backdrop / swipe / Escape) discards the draft untouched.
+     *
+     * Opens from the hearts (saved tracks only — unsaved hearts Like
+     * instead, mirroring Spotify's button order).
+     *
+     * Refresh is event-driven (open, track change, like change, user action)
+     * — deliberately NO timer: opening Spotify's UI steals focus, so
+     * background polling would fight the user.
+     */
+    var psheetOpen = false;
+    var psheetTimer = 0;
+    var psheetNoticeTimer = 0;
+    var psheetLoadTimer = 0;
+    var psheetList = [];
+    var psheetStatus = "loading"; // loading | ready | empty | error
+    var psheetTrackKey = "";
+    var psheetSearch = "";
+    var psheetListSig = "";
+    var psheetDrag = null;
+    var psheetLastLoad = 0;
+    // Draft staging (mirrors Spotify's Done/Cancel): initial = server truth
+    // at open, draft = staged checks by playlist key, dirty = user staged
+    // anything, saving = commit in flight.
+    var psheetInitial = [];
+    var psheetDraft = {};
+    var psheetDirty = false;
+    var psheetSaving = false;
+
+    function ptrackKeyOf(snap) {
+      if (!snap) return "";
+      return (snap.track || "") + " | " + (snap.artist || "");
+    }
+
+    function pkeyOf(p) {
+      if (!p) return "";
+      if (p.id) return "id:" + p.id;
+      return "name:" + String(p.name || "").toLowerCase();
+    }
+
+    function plistSig(list) {
+      var parts = [];
+      for (var i = 0; i < list.length; i++) {
+        parts.push(
+          [pkeyOf(list[i]), list[i].name, list[i].containsTrack ? 1 : 0].join("~")
+        );
+      }
+      return parts.join("|");
+    }
+
+    function psheetHeight() {
+      try {
+        return psheetEl.getBoundingClientRect().height || 0;
+      } catch (e) {
+        return 0;
+      }
+    }
+
+    function setPSheetAnim(on) {
+      psheetEl.classList.toggle("spm-psheet-anim", !!on);
+      pbackdropEl.classList.toggle("spm-psheet-anim", !!on);
+    }
+
+    function paintPSheet(offset, dim) {
+      psheetEl.style.transform = offset ? "translateY(" + Math.round(offset) + "px)" : "";
+      pbackdropEl.style.opacity = dim === undefined ? "" : String(Math.max(0, Math.min(1, dim)));
+    }
+
+    function setPSheetNotice(text) {
+      if (!text) {
+        if (!psheetNotice.hidden) psheetNotice.hidden = true;
+        psheetNotice.textContent = "";
+        return;
+      }
+      psheetNotice.textContent = text;
+      psheetNotice.hidden = false;
+      window.clearTimeout(psheetNoticeTimer);
+      psheetNoticeTimer = window.setTimeout(function () {
+        psheetNotice.hidden = true;
+        psheetNotice.textContent = "";
+      }, 4000);
+    }
+
+    function psheetFiltered() {
+      var s = (psheetSearch || "").toLowerCase().trim();
+      if (!s) return psheetList;
+      var out = [];
+      for (var i = 0; i < psheetList.length; i++) {
+        if (String(psheetList[i].name || "").toLowerCase().indexOf(s) !== -1) out.push(psheetList[i]);
+      }
+      return out;
+    }
+
+    // Draft helpers: staged checks by playlist key. Absent key = server
+    // value (nothing staged for that row yet).
+    function pdraftOf(p) {
+      var key = pkeyOf(p);
+      if (Object.prototype.hasOwnProperty.call(psheetDraft, key)) {
+        return !!psheetDraft[key];
+      }
+      return !!p.containsTrack;
+    }
+
+    function paintPsheetFoot() {
+      try {
+        psheetDoneBtn.disabled = !!psheetSaving;
+        psheetCancelBtn.disabled = !!psheetSaving;
+        psheetDoneBtn.classList.toggle("spm-psaving", !!psheetSaving);
+        psheetDoneBtn.innerHTML = psheetSaving ? SVG.spinner : "Done";
+      } catch (e) {}
+    }
+
+    function psheetRow(p) {
+      var key = pkeyOf(p);
+      var staged = pdraftOf(p);
+      var li = el("li", "spm-pitem", null);
+      if (p.isLikedSongs) li.classList.add("spm-liked-row");
+      var btn = el("button", "spm-prow", null);
+      btn.type = "button";
+      var icon = el("span", "spm-picon", null);
+      var artUrl = p.artwork || "";
+      if (p.isLikedSongs) {
+        icon.innerHTML = SVG.heartFill;
+        icon.classList.add("spm-liked-icon");
+      } else if (artUrl) {
+        var img = document.createElement("img");
+        img.className = "spm-part";
+        img.alt = "";
+        img.draggable = false;
+        img.src = artUrl;
+        img.addEventListener("error", function () {
+          try {
+            icon.innerHTML = SVG.playlistRow;
+          } catch (e) {}
+        });
+        icon.appendChild(img);
+      } else {
+        icon.innerHTML = SVG.playlistRow;
+      }
+      var text = el("span", "spm-ptext", null);
+      var nameEl = el("span", "spm-pname", null);
+      nameEl.textContent = p.name || "Unknown playlist";
+      text.appendChild(nameEl);
+      var subEl = el("span", "spm-psub", null);
+      subEl.textContent = p.isLikedSongs ? "Liked Songs" : (p.subtitle || "Playlist");
+      text.appendChild(subEl);
+      var tail = el("span", "spm-ptail", null);
+      if (staged) tail.innerHTML = SVG.check;
+      btn.appendChild(icon);
+      btn.appendChild(text);
+      btn.appendChild(tail);
+      btn.classList.toggle("spm-pactive", !!staged);
+      if (staged) btn.setAttribute("aria-pressed", "true");
+      else btn.setAttribute("aria-pressed", "false");
+      btn.setAttribute(
+        "aria-label",
+        (p.isLikedSongs
+          ? (staged ? "Remove from Liked Songs: " : "Add to Liked Songs: ")
+          : (staged ? "Remove from " : "Add to ")) + (p.name || "playlist")
+      );
+      if (psheetSaving) btn.disabled = true;
+      btn.addEventListener("click", function () {
+        if (psheetSaving) return;
+        psheetDraft[key] = !staged;
+        psheetDirty = true;
+        renderPSheet();
+      });
+      li.appendChild(btn);
+      return li;
+    }
+
+    function psheetStatusBlock() {
+      var wrap = el("div", "spm-pstatus", null);
+      if (psheetStatus === "loading") {
+        var spin = el("span", "spm-pspin", SVG.spinner);
+        wrap.appendChild(spin);
+        var loading = el("p", "spm-pmsg", null);
+        loading.textContent = "Loading playlists...";
+        wrap.appendChild(loading);
+        return wrap;
+      }
+      if (psheetStatus === "error") {
+        var err = el("p", "spm-pmsg", null);
+        err.textContent = "Couldn't load playlists";
+        wrap.appendChild(err);
+        var retry = el("button", "spm-pretry", null);
+        retry.type = "button";
+        retry.textContent = "Try again";
+        retry.addEventListener("click", function () {
+          loadPSheetPlaylists(true);
+        });
+        wrap.appendChild(retry);
+        return wrap;
+      }
+      var msg = el("p", "spm-pmsg", null);
+      var s = (psheetSearch || "").trim();
+      if (psheetStatus === "empty") {
+        msg.textContent = "No playlists found.";
+      } else if (s) {
+        msg.textContent = 'No playlists match "' + s + '".';
+      } else {
+        msg.textContent = "No playlists found.";
+      }
+      wrap.appendChild(msg);
+      return wrap;
+    }
+
+    function renderPSheet() {
+      while (psheetListEl.firstChild) psheetListEl.removeChild(psheetListEl.firstChild);
+      var rows = psheetFiltered();
+      var showList = psheetStatus === "ready" && rows.length > 0;
+      psheetListEl.hidden = !showList;
+      // Liked-only list reads as "only Liked": show Spotify's empty line
+      // beneath it (same pattern as Devices' "No other devices found").
+      var s = (psheetSearch || "").trim();
+      var likedOnly = showList && !s && rows.length === 1 && rows[0].isLikedSongs;
+      psheetState.hidden = showList && !likedOnly ? true : false;
+      if (showList) {
+        for (var i = 0; i < rows.length; i++) {
+          psheetListEl.appendChild(psheetRow(rows[i]));
+        }
+        if (!likedOnly) return;
+      }
+      while (psheetState.firstChild) psheetState.removeChild(psheetState.firstChild);
+      if (likedOnly) {
+        var wrap = el("div", "spm-pstatus", null);
+        var none = el("p", "spm-pmsg", null);
+        none.textContent = "No other playlists found";
+        wrap.appendChild(none);
+        psheetState.appendChild(wrap);
+        return;
+      }
+      psheetState.appendChild(psheetStatusBlock());
+    }
+
+    function applyPsheetList(list, statusHint) {
+      psheetList = list || [];
+      if (statusHint) {
+        psheetStatus = statusHint;
+      } else if (!psheetList.length) {
+        psheetStatus = "empty";
+      } else {
+        psheetStatus = "ready";
+      }
+      // Fresh server truth resets the draft (open, retry, track change).
+      psheetInitial = psheetList;
+      psheetDraft = {};
+      psheetDirty = false;
+      psheetSaving = false;
+      paintPsheetFoot();
+      var sig = plistSig(psheetFiltered()) + "|" + psheetStatus + "|" + pdraftSig();
+      if (sig !== psheetListSig) {
+        psheetListSig = sig;
+        renderPSheet();
+      }
+    }
+
+    function pdraftSig() {
+      var keys = [];
+      for (var k in psheetDraft) {
+        if (Object.prototype.hasOwnProperty.call(psheetDraft, k)) {
+          keys.push(k + "=" + (psheetDraft[k] ? 1 : 0));
+        }
+      }
+      keys.sort();
+      return keys.join(",");
+    }
+
+    // Draft changes vs the server truth loaded at open.
+    function pdraftChanges() {
+      var out = [];
+      for (var i = 0; i < psheetList.length; i++) {
+        var p = psheetList[i];
+        var key = pkeyOf(p);
+        if (!Object.prototype.hasOwnProperty.call(psheetDraft, key)) continue;
+        var want = !!psheetDraft[key];
+        if (want === !!p.containsTrack) continue;
+        out.push({
+          uri: p.uri || "",
+          id: p.id || "",
+          name: p.name || "",
+          isLikedSongs: !!p.isLikedSongs,
+          want: want,
+        });
+      }
+      return out;
+    }
+
+    // Cached paint instantly, then ONE fresh read (hidden menus, deferred
+    // until the slide lands so the open never stutters — same as Devices).
+    function loadPSheetPlaylists(force) {
+      if (psheetLoadTimer) {
+        window.clearTimeout(psheetLoadTimer);
+        psheetLoadTimer = 0;
+      }
+      psheetLastLoad = nowMs();
+      var cached = [];
+      try {
+        cached = spotify.getCachedPlaylists ? spotify.getCachedPlaylists() : [];
+      } catch (e) {
+        cached = [];
+      }
+      if (cached && cached.length && !force) {
+        applyPsheetList(cached);
+      } else if (psheetStatus !== "loading" || force) {
+        if (!cached.length) {
+          psheetStatus = "loading";
+          renderPSheet();
+        }
+      }
+      var promise = null;
+      try {
+        promise = force && spotify.refreshPlaylists ? spotify.refreshPlaylists() : spotify.getPlaylists();
+      } catch (e) {
+        promise = null;
+      }
+      if (!promise || !promise.then) {
+        if (!cached.length) {
+          psheetStatus = "error";
+          renderPSheet();
+        }
+        return;
+      }
+      promise
+        .then(function (list) {
+          if (!psheetOpen) return;
+          if (list && list.length) {
+            applyPsheetList(list);
+          } else if (!psheetList.length) {
+            var st = null;
+            try {
+              st = spotify.getPlaylistsState ? spotify.getPlaylistsState() : null;
+            } catch (e) {}
+            if (st && st.ok === false) {
+              psheetStatus = "error";
+              renderPSheet();
+            } else {
+              applyPsheetList([], "empty");
+            }
+          }
+        })
+        .catch(function () {
+          if (!psheetOpen) return;
+          if (!psheetList.length) {
+            psheetStatus = "error";
+            renderPSheet();
+          } else {
+            setPSheetNotice("Couldn't refresh playlists.");
+          }
+        });
+    }
+
+    // Done: diff the draft against server truth and commit every change
+    // through Spotify's real rows in one batch (mirrors their Done). Cancel
+    // just closes — the draft evaporates.
+    function savePsheetDraft() {
+      if (!psheetOpen || psheetSaving) return;
+      var changes = pdraftChanges();
+      if (!changes.length) {
+        closePSheet();
+        return;
+      }
+      if (!spotify.savePlaylistDraft) {
+        setPSheetNotice("Couldn't update playlists right now.");
+        return;
+      }
+      psheetSaving = true;
+      paintPsheetFoot();
+      renderPSheet();
+      var promise = null;
+      try {
+        promise = spotify.savePlaylistDraft(changes);
+      } catch (e) {
+        promise = null;
+      }
+      if (!promise || !promise.then) {
+        psheetSaving = false;
+        paintPsheetFoot();
+        renderPSheet();
+        setPSheetNotice("Couldn't update playlists. Try again.");
+        return;
+      }
+      promise
+        .then(function (res) {
+          if (!psheetOpen) {
+            psheetSaving = false;
+            return;
+          }
+          if (res && res.ok) {
+            psheetSaving = false;
+            if (res.list) applyPsheetList(res.list);
+            closePSheet();
+            return;
+          }
+          // Partial/total failure: stay open on the true state so the user
+          // can retry; the heart follows via snapshot either way.
+          psheetSaving = false;
+          var names = res && res.failed && res.failed.length ? res.failed.join(", ") : "";
+          setPSheetNotice(
+            names ? "Couldn't update " + names + "." : "Couldn't update playlists. Try again."
+          );
+          loadPSheetPlaylists(true);
+        })
+        .catch(function () {
+          if (!psheetOpen) {
+            psheetSaving = false;
+            return;
+          }
+          psheetSaving = false;
+          paintPsheetFoot();
+          renderPSheet();
+          setPSheetNotice("Couldn't update playlists. Try again.");
+        });
+    }
+
+    function syncPsheetWithSnap(snap) {
+      if (!psheetOpen || !snap) return;
+      var key = ptrackKeyOf(snap);
+      // Track changed under the open sheet: never show Track A's membership
+      // for Track B — reload fresh for the new track (draft is discarded,
+      // keeps the search text).
+      if (key !== psheetTrackKey) {
+        psheetTrackKey = key;
+        psheetStatus = "loading";
+        renderPSheet();
+        loadPSheetPlaylists(true);
+        return;
+      }
+      // Like flipped externally (heart or Spotify itself): mirror it in the
+      // server row; the draft follows only while pristine, so staged checks
+      // are never clobbered mid-edit.
+      var changed = false;
+      for (var i = 0; i < psheetList.length; i++) {
+        if (psheetList[i].isLikedSongs && !!psheetList[i].containsTrack !== !!snap.liked) {
+          psheetList[i].containsTrack = !!snap.liked;
+          if (!psheetDirty) {
+            try {
+              delete psheetDraft[pkeyOf(psheetList[i])];
+            } catch (e) {}
+          }
+          changed = true;
+        }
+      }
+      if (changed) {
+        psheetListSig = "";
+        renderPSheet();
+      }
+    }
+
+    function beginPSheet() {
+      if (psheetOpen) return;
+      // Only one sheet at a time: Devices yields to Save and vice versa.
+      try {
+        if (typeof closeSheet === "function") closeSheet();
+      } catch (e) {}
+      psheetOpen = true;
+      root.classList.add("spm-psheet-open");
+      psheetEl.hidden = false;
+      pbackdropEl.hidden = false;
+      try {
+        cardEl.setAttribute("aria-hidden", "true");
+        mini.setAttribute("aria-hidden", "true");
+      } catch (e) {}
+      psheetList = [];
+      psheetStatus = "loading";
+      psheetListSig = "";
+      psheetInitial = [];
+      psheetDraft = {};
+      psheetDirty = false;
+      psheetSaving = false;
+      paintPsheetFoot();
+      psheetSearch = "";
+      try {
+        if (psheetSearchInput) psheetSearchInput.value = "";
+      } catch (e) {}
+      try {
+        psheetTrackKey = lastSnap ? ptrackKeyOf(lastSnap) : "";
+      } catch (e) {
+        psheetTrackKey = "";
+      }
+      setPSheetNotice("");
+      renderPSheet();
+      psheetLastLoad = nowMs();
+      if (psheetLoadTimer) window.clearTimeout(psheetLoadTimer);
+      psheetLoadTimer = window.setTimeout(function () {
+        psheetLoadTimer = 0;
+        if (psheetOpen) loadPSheetPlaylists(false);
+      }, 260);
+      try {
+        abortGesture();
+      } catch (e) {}
+    }
+
+    function finishPSheetOpen() {
+      try {
+        psheetClose.focus({ preventScroll: true });
+      } catch (e) {}
+    }
+
+    function glidePSheetHome() {
+      if (prefersReducedMotion()) {
+        setPSheetAnim(false);
+        paintPSheet(0);
+        return;
+      }
+      setPSheetAnim(true);
+      var raf = window.requestAnimationFrame || function (fn) {
+        return window.setTimeout(fn, 16);
+      };
+      raf(function () {
+        paintPSheet(0);
+      });
+    }
+
+    function openPSheet() {
+      if (psheetOpen) return;
+      beginPSheet();
+      if (prefersReducedMotion()) {
+        setPSheetAnim(false);
+        paintPSheet(0);
+        finishPSheetOpen();
+        return;
+      }
+      setPSheetAnim(false);
+      paintPSheet(psheetHeight() || 320, 0);
+      void psheetEl.offsetHeight;
+      glidePSheetHome();
+      window.clearTimeout(psheetTimer);
+      psheetTimer = window.setTimeout(finishPSheetOpen, 300);
+    }
+
+    function hidePSheetNow() {
+      psheetEl.hidden = true;
+      pbackdropEl.hidden = true;
+      setPSheetAnim(false);
+      paintPSheet(0);
+      try {
+        likeBtn.focus({ preventScroll: true });
+      } catch (e) {}
+      envSample = null;
+      scheduleEnvironment();
+    }
+
+    function closePSheet() {
+      if (!psheetOpen) return;
+      psheetOpen = false;
+      psheetDrag = null;
+      root.classList.remove("spm-psheet-open");
+      try {
+        cardEl.removeAttribute("aria-hidden");
+        mini.removeAttribute("aria-hidden");
+      } catch (e) {}
+      if (prefersReducedMotion()) {
+        hidePSheetNow();
+        return;
+      }
+      setPSheetAnim(true);
+      paintPSheet(psheetHeight() || 320, 0);
+      window.clearTimeout(psheetTimer);
+      psheetTimer = window.setTimeout(hidePSheetNow, 280);
+    }
+
+    function psheetDragStart(e) {
+      if (!psheetOpen || psheetDrag) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      psheetDrag = {
+        id: e.pointerId,
+        y0: e.clientY,
+        dy: 0,
+        t0: nowMs(),
+        lastY: e.clientY,
+        lastT: nowMs(),
+        vel: 0,
+      };
+      setPSheetAnim(false);
+      try {
+        psheetEl.setPointerCapture && psheetEl.setPointerCapture(e.pointerId);
+      } catch (err) {}
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function psheetDragMove(e) {
+      if (!psheetDrag || e.pointerId !== psheetDrag.id) return;
+      var dy = e.clientY - psheetDrag.y0;
+      var t = nowMs();
+      psheetDrag.vel = (e.clientY - psheetDrag.lastY) / Math.max(1, t - psheetDrag.lastT);
+      psheetDrag.dy = dy;
+      psheetDrag.lastY = e.clientY;
+      psheetDrag.lastT = t;
+      var h = Math.max(160, psheetHeight());
+      var offset = dy > 0 ? Math.min(dy, h) : Math.max(dy * 0.22, -36);
+      paintPSheet(offset, Math.max(0.15, 1 - Math.max(0, offset) / h));
+      if (e.cancelable) e.preventDefault();
+    }
+
+    function psheetDragEnd(e) {
+      if (!psheetDrag) return;
+      if (e && e.pointerId !== undefined && e.pointerId !== psheetDrag.id) return;
+      var d = psheetDrag;
+      psheetDrag = null;
+      var h = Math.max(160, psheetHeight());
+      var stalled = nowMs() - d.lastT > 140;
+      var vel = stalled ? 0 : d.vel;
+      if (d.dy > Math.max(64, h * 0.22) || (d.dy > 36 && vel > 0.6)) {
+        closePSheet();
+        return;
+      }
+      glidePSheetHome();
+    }
+
+    // The sheet opens from the hearts (see heartTap), never from a
+    // dedicated button: unsaved hearts Like, saved hearts open the sheet.
+    psheetClose.addEventListener("click", function () {
+      closePSheet();
+    });
+    // Spotify parity: Cancel discards the draft, Done commits it.
+    if (psheetCancelBtn) {
+      psheetCancelBtn.addEventListener("click", function () {
+        if (psheetSaving) return;
+        closePSheet();
+      });
+    }
+    if (psheetDoneBtn) {
+      psheetDoneBtn.addEventListener("click", function () {
+        savePsheetDraft();
+      });
+    }
+    pbackdropEl.addEventListener("click", function () {
+      closePSheet();
+    });
+    pgrabEl.addEventListener("pointerdown", psheetDragStart);
+    psheetHead.addEventListener("pointerdown", psheetDragStart);
+    window.addEventListener("pointermove", psheetDragMove, true);
+    window.addEventListener("pointerup", psheetDragEnd, true);
+    window.addEventListener("pointercancel", function () {
+      if (psheetDrag) glidePSheetHome();
+      psheetDrag = null;
+    }, true);
+    if (psheetSearchInput) {
+      psheetSearchInput.addEventListener("input", function () {
+        psheetSearch = psheetSearchInput.value || "";
+        renderPSheet();
+      });
+    }
 
     // --- snapshot rendering (no full DOM rebuilds) ---
     function render(snap) {
@@ -2369,6 +3101,12 @@
       ) {
         loadSheetDevices(false);
       }
+
+      // Save sheet follows track + Like via the same snapshot (event-driven,
+      // no timer — see the sheet header comment for why polling is wrong here).
+      try {
+        syncPsheetWithSnap(snap);
+      } catch (e) {}
 
       // Re-anchor the smooth clock. Spotify reports whole seconds, so a
       // hard snap on every snapshot would yank the gliding estimate back
