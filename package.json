@@ -8,12 +8,15 @@
   },
   "scripts": {
     "serve": "node tests/serve.js",
-    "test": "npm run test:curation && npm run test:tippy && npm run test:sheet && npm run test:fallback && npm run test:ui",
+    "test": "npm run test:curation && npm run test:tippy && npm run test:stale && npm run test:lazy && npm run test:sheet && npm run test:fallback && npm run test:ui && npm run test:flaky",
     "test:curation": "node tests/cdp-run.js tests/real-dom-curation.html",
     "test:tippy": "node tests/cdp-run.js tests/real-dom-tippy.html",
+    "test:stale": "node tests/cdp-run.js tests/real-dom-stale-popper.html",
+    "test:lazy": "node tests/cdp-run.js tests/real-dom-lazy-popper.html",
     "test:fallback": "node tests/cdp-probe.js tests/harness.html tests/probe-fallback.js 4000",
     "test:sheet": "node tests/cdp-probe.js tests/harness.html tests/probe-sheet.js 4000",
     "test:ui": "node tests/cdp-probe.js tests/harness.html tests/probe-ui.js 4000",
+    "test:flaky": "node tests/cdp-probe.js tests/harness.html tests/probe-flaky.js 4000",
     "diagnose": "node -e \"console.log('Open tests/diagnose-playlists.html, then paste tests/diagnose-playlists.js into the Spotify tab console.')\""
   },
   "keywords": [],

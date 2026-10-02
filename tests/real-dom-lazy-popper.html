@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SPM — lazy popper / pointerdown trigger</title>
+<style>
+  body { font: 13px system-ui; margin: 0; background: #121212; color: #fff; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; height: 90px; background: #000;
+           display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  [data-testid="now-playing-widget"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] [data-encore-id="listRowTitle"] { flex: 1; }
+  img[data-testid="entity-image"] { width: 32px; height: 32px; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+
+<footer data-testid="now-playing-bar">
+  <div data-testid="now-playing-widget">
+    <img data-testid="cover-art-image" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+    <a href="/track/abc123">Real Track</a>
+    <button aria-checked="true" class="e-10860-legacy-button e-10860-legacy-button-tertiary encore-internal-color-text-bright-accent" aria-label="Add to playlist" data-encore-id="buttonTertiary" aria-expanded="false"><span></span></button>
+  </div>
+  <button data-testid="control-button-playpause" aria-label="Pause">||</button>
+  <button data-testid="add-button" aria-label="Remove from Liked Songs" aria-checked="true">&#9829;</button>
+</footer>
+
+<script src="../spotifyAdapter.js"></script>
+<script>
+/* The reported Android situation, modelled:
+ *   - NO tippy popper and NO #curation-sheet-list exist in the DOM to begin
+ *     with; the first tap CREATES the whole popper subtree;
+ *   - the button opens on POINTERDOWN, not on click. A bare element.click()
+ *     therefore does nothing at all — which is why the menu never appeared.
+ */
+var LIKED_URI = "spotify:collection:tracks";
+var PLAYLISTS = [
+  ["spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", "web swinging in nyc"],
+  ["spotify:playlist:4zZa7QE5aV82huyDbtR8En", "IX \u00b7 MMXXVI"],
+  ["spotify:playlist:0GSoubNd1aMs7hJjdedYcf", "VI \u00b7 MMXXVI"],
+  ["spotify:playlist:4SX1HQaUaInlyuZWP3Q7j7", "V \u00b7 MMXXVI"],
+  ["spotify:playlist:00w41uqROQymsUsla3Vk63", "IV \u00b7 MMXXVI"],
+  ["spotify:playlist:6rfoNwFpRr2uJ5MGlXfaxY", "My playlist #9"],
+];
+var membership = {};
+var liked = true;
+var openCount = 0;
+var triggerLog = [];
+
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function buildPopper() {
+  var setsize = PLAYLISTS.length + 2;
+  function row(uri, name, pos) {
+    var checked = uri === LIKED_URI ? liked : !!membership[uri];
+    return '<li role="presentation" data-depth="0">' +
+      '<button class="QpDFZgzjNoy0kJn5o07g" role="menuitemcheckbox" aria-checked="' +
+        (checked ? "true" : "false") + '" aria-setsize="' + setsize + '" aria-posinset="' + pos + '" tabindex="-1">' +
+        '<div data-encore-id="listRow" role="group" aria-labelledby="listrow-title-' + uri + '">' +
+          '<div class="side"><div class="flex"><div style="width:32px;height:32px">' +
+            '<img data-testid="entity-image" alt="' + esc(name) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">' +
+          '</div></div></div>' +
+          '<div class="hdr"><div class="col"><p class="ttl" data-encore-id="listRowTitle" id="listrow-title-' + uri + '">' +
+            esc(name) + '</p></div></div>' +
+        '</div></button></li>';
+  }
+  var rows = '<li role="presentation" data-depth="0"><button role="menuitem" aria-setsize="' + setsize +
+    '" aria-posinset="1" tabindex="-1"><div data-encore-id="listRow" role="group" aria-labelledby="listrow-title-new-playlist">' +
+    '<div class="hdr"><div class="col"><p class="ttl" data-encore-id="listRowTitle" id="listrow-title-new-playlist">New playlist</p>' +
+    '</div></div></div></button></li>' + row(LIKED_URI, "Liked Songs", 2);
+  PLAYLISTS.forEach(function (p, i) { rows += row(p[0], p[1], i + 3); });
+
+  document.body.insertAdjacentHTML("beforeend",
+    '<div data-tippy-root="" id="tippy-1" style="position:absolute">' +
+      '<div id="context-menu" data-testid="context-menu"><form class="y_CFKW8usK4BrguFZgGF">' +
+        '<div class="t"><span data-encore-id="text">Add to playlist</span></div>' +
+        '<div class="s"><div role="search"><input role="searchbox" maxlength="80" placeholder="Find a playlist" aria-label="Find a playlist" value=""></div></div>' +
+        '<ul tabindex="0" role="menu" data-depth="0" aria-label="Add to playlist menu" id="curation-sheet-list">' + rows + '</ul>' +
+        '<div class="f">' +
+          '<button type="button" data-encore-id="buttonTertiary">Cancel</button>' +
+          '<button type="button" data-encore-id="buttonTertiary">Done</button>' +
+        '</div>' +
+      '</form></div>' +
+    '</div>');
+
+  var root = document.getElementById("tippy-1");
+  root.querySelectorAll('button[role="menuitemcheckbox"]').forEach(function (b) {
+    b.addEventListener("click", function (e) {
+      e.preventDefault();
+      b.setAttribute("aria-checked", b.getAttribute("aria-checked") === "true" ? "false" : "true");
+    });
+  });
+  root.querySelectorAll("button").forEach(function (b) {
+    if (b.textContent !== "Cancel" && b.textContent !== "Done") return;
+    b.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (b.textContent === "Done") {
+        root.querySelectorAll('button[role="menuitemcheckbox"]').forEach(function (x) {
+          var d = x.querySelector('[data-encore-id="listRow"]');
+          var clean = (d ? d.getAttribute("aria-labelledby") : "").replace(/^listrow-title-/, "");
+          var on = x.getAttribute("aria-checked") === "true";
+          if (clean === LIKED_URI) liked = on; else membership[clean] = on;
+        });
+      }
+      root.remove();
+    });
+  });
+}
+
+var btn = document.querySelector('footer button[data-encore-id="buttonTertiary"]');
+// Opens on POINTERDOWN only. A bare el.click() does nothing — which is the bug.
+btn.addEventListener("pointerdown", function () {
+  triggerLog.push("pointerdown");
+  openCount++;
+  buildPopper();
+});
+btn.addEventListener("click", function () { triggerLog.push("click"); });
+
+var out = [], fails = 0;
+function ok(c, m) { if (!c) fails++; out.push((c ? "PASS  " : "FAIL  ") + m); }
+function finish() {
+  var pre = document.getElementById("out");
+  pre.textContent = out.join("\n") + "\n\n" + (fails ? fails + " FAILED" : "ALL PASSED");
+  document.title = fails ? "FAILED" : "DONE";
+}
+
+out.push("--- BEFORE any tap ---");
+out.push("   tippy roots in DOM      = " + document.querySelectorAll("[data-tippy-root]").length);
+out.push("   #curation-sheet-list   = " + document.querySelectorAll("#curation-sheet-list").length);
+ok(document.querySelectorAll("#curation-sheet-list").length === 0,
+  "no list exists before the tap (the reported condition)");
+
+var sp = window.SpotMobile.spotify;
+sp.getPlaylists({ fresh: true }).then(function (list) {
+  out.push("--- after the extension's own tap ---");
+  out.push("   trigger log   = " + JSON.stringify(triggerLog));
+  out.push("   poppers built = " + openCount);
+  out.push("   rows read     = " + (list ? list.length : 0));
+  (list || []).forEach(function (p) { out.push("     " + p.name); });
+  ok(triggerLog.indexOf("pointerdown") !== -1,
+    "the extension's tap reached the button's pointerdown handler");
+  ok(!!list && list.length === PLAYLISTS.length + 1,
+    "the full list was read from the popper the tap created");
+  var st = sp.getPlaylistsState();
+  ok(st.viaCuration === true, "read came from the curation sheet (no library fallback)");
+  ok(st.complete !== false, "sweep reported complete");
+  return sp.addToPlaylist({ id: "1w4tj8rQmdzeNmV7JzCbeE",
+    uri: "spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", name: "web swinging in nyc" });
+}).then(function (res) {
+  ok(!!res && res.ok === true, "add commits against the lazily-created popper");
+  ok(!!membership["spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE"], "membership really changed");
+  finish();
+}).catch(function (e) {
+  out.push("THREW: " + ((e && e.stack) || e));
+  fails++;
+  finish();
+});
+</script>
+</body>
+</html>

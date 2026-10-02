@@ -1590,6 +1590,103 @@
     }
   }
 
+  // A full tap, not just `click`.
+  //
+  // element.click() dispatches a single `click`. A real tap is
+  // pointerdown -> mousedown -> pointerup -> mouseup -> click, and popper
+  // libraries (tippy under Spotify's sheet) commonly open on the pointer/mouse
+  // DOWN rather than on click. On desktop the bare click happened to be enough;
+  // on Android the sheet simply never opened, so there was nothing to read and
+  // the read silently degraded to the Your Library scrape — which is exactly the
+  // "shortened playlist list" symptom.
+  //
+  // Android/desktop-site notes (observed on-device):
+  // - The bottom-bar curation button can be outside the *visual* viewport
+  //   (wide layout viewport scaled down to the glass). A synthetic click on an
+  //   off-screen target is ignored, so scroll it into view + focus first.
+  // - Some builds only mount the popper on hover/focus before click, so fire
+  //   the over/enter sequence too. Touch + mouse variants are both fired: the
+  //   desktop-mode page may listen for either, and firing both is harmless.
+  //
+  // Nothing here is trusted or invented: Spotify's own handler still runs, we
+  // just present the same event sequence a finger would.
+  function userClick(el) {
+    if (!el) return false;
+    var fired = false;
+    try {
+      try {
+        if (el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch (e0) {}
+      try {
+        if (el.focus) el.focus({ preventScroll: true });
+      } catch (e0b) {
+        try { el.focus(); } catch (e0c) {}
+      }
+      var r = el.getBoundingClientRect();
+      var x = Math.round(r.left + r.width / 2);
+      var y = Math.round(r.top + r.height / 2);
+      var mouseBase = { bubbles: true, cancelable: true, composed: true,
+        clientX: x, clientY: y, button: 0 };
+      // One press, not two: firing both touch AND mouse pointerdowns creates
+      // two tippy poppers (the lazy-popper fixture counts opens), leaving a
+      // leaked duplicate behind. Touch first (the Android path), mouse as the
+      // fallback only when PointerEvent is unavailable.
+      var ptrBase = { bubbles: true, cancelable: true, composed: true,
+        pointerId: 1, pointerType: "touch", isPrimary: true, button: 0,
+        clientX: x, clientY: y };
+      function fire(type, Ctor, base, extra) {
+        try {
+          var opts = Object.assign({}, base, extra || {});
+          el.dispatchEvent(new Ctor(type, opts));
+          fired = true;
+        } catch (e) {}
+      }
+      // Hover/focus prelude: some builds mount the tippy on enter, not click.
+      fire("pointerover", window.PointerEvent ? PointerEvent : MouseEvent, ptrBase, { buttons: 0 });
+      try {
+        el.dispatchEvent(new MouseEvent("mouseover", Object.assign({ buttons: 0 }, mouseBase)));
+        fired = true;
+      } catch (eH) {}
+      if (window.PointerEvent) {
+        fire("pointerdown", PointerEvent, ptrBase, { buttons: 1 });
+      }
+      fire("mousedown", MouseEvent, mouseBase, { buttons: 1 });
+      if (window.PointerEvent) {
+        try {
+          el.dispatchEvent(new PointerEvent("pointerup",
+            Object.assign({ buttons: 0 }, ptrBase)));
+        } catch (e3) {}
+      }
+      try {
+        el.dispatchEvent(new MouseEvent("mouseup",
+          Object.assign({ buttons: 0 }, mouseBase)));
+      } catch (e4) {}
+      el.click();
+      return true;
+    } catch (e) {
+      try {
+        el.click();
+        return fired || true;
+      } catch (e2) {
+        return false;
+      }
+    }
+  }
+
+  // Cheap "did anything happen at all?" probe: popper roots and playlist lists
+  // present right now. Used to tell "the click landed" from "the click did
+  // nothing", so the open can be retried instead of silently falling back.
+  function curationSurfaceCount() {
+    var n = 0;
+    try {
+      n += document.querySelectorAll('div[data-tippy-root]').length;
+    } catch (e) {}
+    try {
+      n += document.querySelectorAll("#curation-sheet-list").length;
+    } catch (e2) {}
+    return n;
+  }
+
   function setNativeRangeValue(input, value) {
     if (!input) return false;
     try {
@@ -1786,7 +1883,7 @@
   function waitFor(fn, timeoutMs, intervalMs) {
     return new Promise(function (resolve) {
       var limit = timeoutMs || 1500;
-      var every = intervalMs || 60;
+      var every = intervalMs || 45;
       var t0 = Date.now();
       function poll() {
         var v = null;
@@ -2081,7 +2178,7 @@
     var btn = findSideButton("device");
     if (!btn) return Promise.resolve({ ok: false, opened: false });
     veilStart();
-    click(btn);
+    userClick(btn);
     return waitFor(function () {
       return pickerIsOpen() ? true : null;
     }, 1800, 60).then(function (found) {
@@ -2121,7 +2218,7 @@
         showPicker();
         return false;
       }
-      click(fallback);
+      userClick(fallback);
       return waitFor(function () {
         return pickerIsOpen() ? null : true;
       }, 900, 60).then(function (closed2) {
@@ -2219,7 +2316,7 @@
         new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 })
       );
     } catch (e) {}
-    return click(target);
+    return userClick(target);
   }
 
   function rowGone(key, name) {
@@ -3124,15 +3221,37 @@
   var CURATION = {
     listId: "curation-sheet-list",
     listLabel: "add to playlist menu",
+    // The raw, untranslated aria-label for the selector. Spotify localises the
+    // visible label, so matching on it alone would break in other languages.
+    listLabelRaw: "Add to playlist menu",
     likedUri: "spotify:collection:tracks",
     newRow: "new-playlist",
   };
 
-  // The bottom-bar curation button. Widget first, then the whole player bar.
-  // Recognized by encore-id + tristate + label in BOTH of its states
-  // ("Add to Liked Songs" unsaved / "Add to playlist" saved). Generated
-  // classes are ignored.
-  function findCurationButton() {
+  // Every curation button on the page, best-first. There can be more than one
+  // (the bottom-bar heart AND a track-row heart, each rendering its own tippy
+  // popper). Picking only the first meant that if that particular instance was
+  // unusable we never tried the one the user actually sees working.
+  //
+  // Ordering (best first): saved-state (aria-checked=true) before unsaved —
+  // a saved press OPENS the sheet directly while an unsaved press only Likes
+  // (requiring the transient dance, which is the fragile path on Android);
+  // in-player (bottom bar) before document-wide track rows (which may belong
+  // to a different track); visible before hidden.
+  function curationButtonLabelOk(label, inPlayer) {
+    var l = norm(label);
+    if (!l) return !!inPlayer; // player-scoped Tertiary+checked is the curation toggle even if relabelled
+    if (l === "add to liked songs" || l === "add to playlist") return true;
+    if (l.indexOf("liked songs") !== -1) return true;
+    // Localized / future-proof: "add to ..." + playlist/liked mentions.
+    if (l.indexOf("add to") !== -1 && (l.indexOf("playlist") !== -1 || l.indexOf("liked") !== -1)) return true;
+    if (l.indexOf("añadir") !== -1 || l.indexOf("ajouter") !== -1 || l.indexOf("hinzufügen") !== -1) return true;
+    if (l.indexOf("aggiungi") !== -1 || l.indexOf("toevoegen") !== -1) return !!inPlayer;
+    return !!inPlayer && l.length < 40;
+  }
+
+  function findCurationButtons() {
+    var out = [];
     var scopes = [];
     try {
       var w = findWidget();
@@ -3140,30 +3259,64 @@
       var p = findPlayer();
       if (p && p !== w) scopes.push(p);
     } catch (e) {}
-    for (var s = 0; s < scopes.length; s++) {
-      var btns = [];
-      try {
-        btns = Array.prototype.slice.call(
-          scopes[s].querySelectorAll('button[data-encore-id="buttonTertiary"]')
-        );
-      } catch (e) {
-        btns = [];
-      }
-      for (var i = 0; i < btns.length; i++) {
-        var checked = null;
-        var label = "";
+    var seen = [];
+    for (var pass = 0; pass < 2; pass++) {
+      // pass 0: in-scope buttons. pass 1: anywhere on the page, as a last
+      // resort (a track-row heart lives outside the player bar).
+      var roots = pass === 0 ? scopes : [document.documentElement];
+      for (var s = 0; s < roots.length; s++) {
+        var root = roots[s];
+        if (!root || !root.querySelectorAll) continue;
+        var btns = [];
         try {
-          checked = btns[i].getAttribute("aria-checked");
-          label = norm(btns[i].getAttribute("aria-label"));
-        } catch (e) {}
-        if (checked === null) continue;
-        if (label === "add to liked songs" || label === "add to playlist" ||
-            label.indexOf("liked songs") !== -1) {
-          return btns[i];
+          btns = Array.prototype.slice.call(
+            root.querySelectorAll('button[data-encore-id="buttonTertiary"]')
+          );
+        } catch (e) {
+          btns = [];
+        }
+        for (var i = 0; i < btns.length; i++) {
+          var b = btns[i];
+          if (seen.indexOf(b) !== -1) continue;
+          var checked = null;
+          var label = "";
+          try {
+            checked = b.getAttribute("aria-checked");
+            label = b.getAttribute("aria-label") || "";
+          } catch (e2) {}
+          if (checked === null) continue;
+          var inPlayer = pass === 0;
+          // Track-row hearts outside the player can share the exact same
+          // label/shape but belong to a DIFFERENT track. They stay as a last
+          // resort only; the bottom-bar button is authoritative.
+          if (!curationButtonLabelOk(label, inPlayer)) continue;
+          seen.push(b);
+          var vis = false;
+          try {
+            vis = isVisible(b);
+          } catch (e3) { vis = false; }
+          var saved = checked === "true";
+          var inFooter = false;
+          try {
+            inFooter = !!(b.closest && (b.closest("footer") || b.closest('[data-testid="now-playing-bar"]')));
+          } catch (e4) {}
+          out.push({ el: b, visible: vis, saved: saved, inFooter: inFooter, inPlayer: inPlayer });
         }
       }
     }
-    return null;
+    out.sort(function (a, b) {
+      if (!!a.saved !== !!b.saved) return a.saved ? -1 : 1;
+      if (!!a.inPlayer !== !!b.inPlayer) return a.inPlayer ? -1 : 1;
+      if (!!a.inFooter !== !!b.inFooter) return a.inFooter ? -1 : 1;
+      if (!!a.visible !== !!b.visible) return a.visible ? -1 : 1;
+      return 0;
+    });
+    return out;
+  }
+
+  function findCurationButton() {
+    var all = findCurationButtons();
+    return all.length ? all[0].el : null;
   }
 
   function curationLikedState() {
@@ -3181,22 +3334,86 @@
     return null;
   }
 
+  // Tippy keeps every popper it has EVER created in the DOM (one
+  // div[data-tippy-root] per instance — the page accumulates several over a
+  // session, e.g. tippy-36 from the bottom-bar heart and tippy-37 from a track
+  // row), and each one carries its own #curation-sheet-list plus its own
+  // "Find a playlist" input with whatever query was last typed into it.
+  //
+  // document.getElementById() returns the FIRST match regardless of which
+  // popper is live, so this could pick a dead popper (making the whole read
+  // fail -> library fallback) or a stale one still holding an old, FILTERED
+  // list. That is the "randomly filtered and incomplete" symptom.
+  //
+  // Enumerate every candidate and take the LIVE one instead.
+  function curationCandidates() {
+    var out = [];
+    var nodes = [];
+    try {
+      nodes = Array.prototype.slice.call(document.querySelectorAll(
+        "#" + CSS_ESC(CURATION.listId) + ', ul[aria-label="' + CURATION.listLabelRaw + '"]'
+      ));
+    } catch (e) {
+      nodes = [];
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      if (isInOurRoot(nodes[i])) continue;
+      out.push(nodes[i]);
+    }
+    if (out.length) return out;
+    // Fallback (locale-proof / id-change-proof): any menu whose rows carry the
+    // curation identity (listrow-title-spotify:… on a menuitemcheckbox). The
+    // tippy "Add to playlist" submenu uses plain menuitem rows without that
+    // identity, so it can never match here.
+    try {
+      var menus = document.querySelectorAll('ul[role="menu"]');
+      for (var m = 0; m < menus.length; m++) {
+        if (isInOurRoot(menus[m])) continue;
+        var btns = null;
+        try {
+          btns = menus[m].querySelectorAll('button[role="menuitemcheckbox"]');
+        } catch (e) { btns = null; }
+        if (!btns || !btns.length) continue;
+        var hit = false;
+        for (var b = 0; b < btns.length && b < 8; b++) {
+          try {
+            if (curationRowUri(btns[b])) { hit = true; break; }
+          } catch (e2) {}
+        }
+        if (hit) out.push(menus[m]);
+      }
+    } catch (e3) {}
+    return out;
+  }
+
   function findCurationList() {
-    var ul = null;
-    try {
-      ul = document.getElementById(CURATION.listId);
-    } catch (e) {
-      ul = null;
+    var cands = curationCandidates();
+    if (!cands.length) return null;
+    // Newest first: tippy appends new popper roots to the end of <body>, so the
+    // most recently opened one is last in document order. That is the LIVE
+    // popper; older ones are stale leftovers (possibly filtered, possibly for
+    // a previous track) and must never win over the live one — even if the
+    // live one is still mounting its rows (the sweep waits for rows).
+    for (var pass = cands.length - 1; pass >= 0; pass--) {
+      var ul = cands[pass];
+      try {
+        if (!isVisible(ul)) continue;
+        var hasId = false;
+        try { hasId = ul.id === CURATION.listId; } catch (eid) {}
+        var label = norm(ul.getAttribute("aria-label"));
+        // The id is stable across locales; the English aria-label is not.
+        // Only enforce the label check for non-id matches (locale-proofing).
+        if (!hasId && label && label.indexOf(CURATION.listLabel) === -1) continue;
+        return ul;
+      } catch (e) {}
     }
-    if (!ul || isInOurRoot(ul)) return null;
-    try {
-      if (!isVisible(ul)) return null;
-      var label = norm(ul.getAttribute("aria-label"));
-      if (label && label.indexOf(CURATION.listLabel) === -1) return null;
-    } catch (e) {
-      return null;
-    }
-    return ul;
+    return null;
+  }
+
+  // Minimal CSS identifier escape: only used to build a selector from our own
+  // constant (never from Spotify's markup), so this just guards odd chars.
+  function CSS_ESC(v) {
+    return String(v).replace(/["\\\]\[]/g, "\\$&");
   }
 
   function curationFormOf(ul) {
@@ -3346,28 +3563,86 @@
     }
   }
 
+  // Spotify's sheet keeps its "Find a playlist" query in component state and
+  // the tippy popper can be reused across opens, so a leftover query filters
+  // the list. A read that inherits it returns a partial, FILTERED result —
+  // which surfaces as a randomly short playlist list on a phone (anything that
+  // seeded the box first, e.g. an earlier write via ensureVisible, decides
+  // whether the next open is filtered or not). Clear it before collecting
+  // anything, and give the list a beat to re-render unfiltered.
+  function clearCurationSearch(form) {
+    var box = null;
+    try {
+      box = form && form.querySelector ? form.querySelector('input[role="searchbox"]') : null;
+    } catch (e) {
+      box = null;
+    }
+    if (!box) return Promise.resolve(false);
+    var cur = "";
+    try {
+      cur = box.value || "";
+    } catch (e) {}
+    if (!cur) return Promise.resolve(false);
+    try {
+      setNativeInputValue(box, "");
+    } catch (e) {}
+    return waitFor(function () {
+      try {
+        return (box.value || "") === "";
+      } catch (e) {
+        return true;
+      }
+    }, 600, 50).then(function () {
+      return true;
+    });
+  }
+
   // Virtualized sweep: collect rows by URI across scroll positions until the
-  // setsize count is reached (setsize includes the New-playlist row) or the
-  // scroll stops producing new rows. Resolves parsed rows (with live els).
+  // setsize count is reached, or the scroller is provably at the end and two
+  // consecutive passes add nothing.
+  //
+  // The old bail-out was "scrollTop stopped moving for 3 steps". That is not a
+  // reliable end-of-list signal: on a short phone viewport the list mounts rows
+  // lazily, so the scroller can sit still while more rows are still pending —
+  // which is how the read came back incomplete. Prefer aria-setsize; fall back
+  // to actually reaching the bottom, confirmed twice.
+  //
+  // Android/desktop-site hardening:
+  // - Start from the TOP (scrollTop=0 + settle) so the pinned Liked Songs row
+  //   is always collected first. A sweep that starts mid-list after a
+  //   clear-search re-render could scroll down and never see the top again —
+  //   which is how Liked Songs went missing from an otherwise "complete" read.
+  // - Wait for the first rows to MOUNT (up to ~2s) instead of returning []
+  //   instantly when the popper is still inflating. An instant [] degrades to
+  //   the Your-Library scrape — the wrong, short list.
+  // - Re-resolve the list + viewport every pass (React replaces nodes; the
+  //   popper itself can be swapped on retry).
+  // - Completeness requires the Liked Songs row: every account has one, so a
+  //   list without it is provably partial and must expire immediately.
   function sweepCurationRows() {
     var byUri = {};
-    var target = 0;
-    var ul = null;
-    try {
-      ul = findCurationList();
-    } catch (e) {
-      ul = null;
+    var maxSetsize = 0;
+    function liveList() {
+      try { return findCurationList(); } catch (e) { return null; }
     }
-    if (!ul) return Promise.resolve([]);
-    var form = curationFormOf(ul);
-    var viewport = null;
-    try {
-      viewport =
-        (form && form.querySelector("[data-overlayscrollbars-viewport]")) ||
-        ul.parentElement;
-    } catch (e) {
-      viewport = null;
+    function liveViewport(ul) {
+      try {
+        var form = curationFormOf(ul);
+        return (
+          (form && form.querySelector("[data-overlayscrollbars-viewport]")) ||
+          (ul && ul.parentElement) ||
+          null
+        );
+      } catch (e) { return null; }
     }
+    function count() {
+      var n = 0;
+      for (var k in byUri) {
+        if (Object.prototype.hasOwnProperty.call(byUri, k)) n++;
+      }
+      return n;
+    }
+    // Returns how many NEW uris this pass added.
     function collect() {
       var rows = [];
       try {
@@ -3375,20 +3650,21 @@
       } catch (e) {
         rows = [];
       }
+      var added = 0;
       for (var i = 0; i < rows.length; i++) {
-        if (!target && rows[i].el) {
-          try {
-            var ss = rows[i].el.getAttribute("aria-setsize");
-            if (ss) target = Math.max(0, parseInt(ss, 10) - 1);
-          } catch (e) {}
+        try {
+          var ss = rows[i].el ? rows[i].el.getAttribute("aria-setsize") : null;
+          if (ss) maxSetsize = Math.max(maxSetsize, parseInt(ss, 10) || 0);
+        } catch (e) {}
+        if (!byUri[rows[i].uri]) {
+          byUri[rows[i].uri] = rows[i];
+          added++;
+        } else if (rows[i].containsTrack && !byUri[rows[i].uri].containsTrack) {
+          // Same row re-rendered with a fresher checked state wins.
+          byUri[rows[i].uri] = rows[i];
         }
-        if (!byUri[rows[i].uri]) byUri[rows[i].uri] = rows[i];
       }
-      var n = 0;
-      for (var k in byUri) {
-        if (Object.prototype.hasOwnProperty.call(byUri, k)) n++;
-      }
-      return n;
+      return added;
     }
     function toList() {
       var out = [];
@@ -3397,43 +3673,157 @@
       }
       return out;
     }
-    collect();
-    if (!viewport || !viewport.scrollTo) return Promise.resolve(toList());
-    return new Promise(function (resolve) {
-      var steps = 0;
-      var stale = 0;
-      var lastTop = -1;
-      (function step() {
-        var have = 0;
-        for (var k in byUri) {
-          if (Object.prototype.hasOwnProperty.call(byUri, k)) have++;
-        }
-        if (target && have >= target) return finish();
-        if (steps >= 40) return finish();
-        var top = 0;
-        try {
-          top = viewport.scrollTop || 0;
-        } catch (e) {}
-        if (top === lastTop) stale++;
-        else stale = 0;
-        lastTop = top;
-        if (stale >= 3 && steps > 4) return finish();
-        steps++;
-        try {
-          viewport.scrollTop = top + 500;
-        } catch (e) {}
-        setTimeout(function () {
-          collect();
-          step();
-        }, 110);
-      })();
-      function finish() {
-        try {
-          viewport.scrollTop = 0;
-        } catch (e) {}
-        resolve(toList());
+    function hasLiked() {
+      return !!byUri[CURATION.likedUri];
+    }
+    function viewportAtBottom(vp) {
+      try {
+        var total = vp.scrollHeight || 0;
+        if (!total) return false;
+        var top = vp.scrollTop || 0;
+        var h = vp.clientHeight || 0;
+        if (!h) return false;
+        return top + h >= total - 4;
+      } catch (e) {
+        return false;
       }
+    }
+    var ul0 = liveList();
+    if (!ul0) return Promise.resolve([]);
+    var form0 = curationFormOf(ul0);
+    var vp0 = liveViewport(ul0);
+    // Settle at the top BEFORE clearing: the clear triggers a re-render and
+    // the first collect must see the unfiltered top (Liked Songs) — not a
+    // mid-list viewport left over from a previous sweep.
+    try {
+      if (vp0) vp0.scrollTop = 0;
+    } catch (e) {}
+    return waitFor(function () {
+      try {
+        return curationLeafRows().length ? true : null;
+      } catch (e) { return null; }
+    }, 2000, 60).then(function () {
+      var form = null;
+      try { form = curationFormOf(liveList()) || form0; } catch (e) { form = form0; }
+      return clearCurationSearch(form).then(function (cleared) {
+        sweepLog.clearedSearch = !!cleared;
+        // The clear re-renders: give it a beat, re-pin to the top, then collect.
+        return waitFor(function () {
+          try { return curationLeafRows().length ? true : null; } catch (e) { return null; }
+        }, 1200, 60).then(function () {
+          var vpStart = liveViewport(liveList());
+          try { if (vpStart) vpStart.scrollTop = 0; } catch (e) {}
+          collect();
+          var viewport = liveViewport(liveList());
+          if (!viewport || !viewport.scrollTo) {
+            // No scroller (short list fully mounted): completeness = setsize
+            // reached (tolerating the New-playlist row) AND Liked present.
+            var list0 = toList();
+            var target0 = maxSetsize ? Math.max(0, maxSetsize - 1) : 0;
+            var ok0 = (!maxSetsize || list0.length >= target0) && hasLiked();
+            sweepLog.noViewport = true;
+            sweepLog.complete = !!ok0;
+            sweepLog.target = target0;
+            sweepLog.maxSetsize = maxSetsize;
+            sweepLog.rows = list0.length;
+            sweepLog.hasLiked = hasLiked();
+            return list0;
+          }
+          return new Promise(function (resolve) {
+            var steps = 0;
+            var bottomRounds = 0;
+            var t0 = nowMsMs();
+            // Re-pin to the top once more: the clear-search re-render above can
+            // leave the viewport mid-list on virtualized builds.
+            try { viewport.scrollTop = 0; } catch (e) {}
+            (function step() {
+              // Re-resolve every pass: React swaps nodes mid-sweep.
+              var vp = liveViewport(liveList()) || viewport;
+              viewport = vp;
+              var target = maxSetsize ? Math.max(0, maxSetsize - 1) : 0;
+              // Definitely whole: setsize count reached AND Liked seen.
+              if (maxSetsize && count() >= maxSetsize && hasLiked()) return finish(true);
+              // Whole under the New-playlist-counted build: setsize-1 + Liked.
+              if (maxSetsize && count() >= target && hasLiked() && bottomRounds >= 1) return finish(true);
+              if (steps >= 60) return finish(false);
+              steps++;
+              var added = collect();
+              // Refresh target after this pass (a later row may carry setsize
+              // when the first pass saw none).
+              target = maxSetsize ? Math.max(0, maxSetsize - 1) : 0;
+              if (maxSetsize && count() >= maxSetsize && hasLiked()) return finish(true);
+              var bottom = vp ? viewportAtBottom(vp) : false;
+              if (bottom && added === 0) {
+                bottomRounds++;
+                // Two confirming passes at the very end, then trust it —
+                // but only with Liked present (else provably partial).
+                if (bottomRounds >= 2 && steps > 3) return finish(hasLiked());
+              } else if (!bottom) {
+                bottomRounds = 0;
+              }
+              var top = 0;
+              try {
+                top = vp.scrollTop || 0;
+              } catch (e) {}
+              // Advance by a screen-ish step, but never past the end.
+              var h = 0;
+              try {
+                h = vp.clientHeight || 400;
+              } catch (e) {}
+              try {
+                vp.scrollTop = Math.min(top + Math.max(240, h * 0.85), (vp.scrollHeight || 0));
+                // Overlayscrollbars + virtualized lists only mount on scroll
+                // events; a programmatic scrollTop without one can leave rows
+                // unmounted on some builds.
+                vp.dispatchEvent(new Event("scroll", { bubbles: true }));
+              } catch (e) {}
+              setTimeout(step, 70);
+            })();
+            // complete=true only when we PROVED we saw everything: the
+            // setsize count was reached (tolerating the New row) AND the
+            // pinned Liked Songs row was seen, or the scroller reached the
+            // end and stayed quiet with Liked present. Anything else is a
+            // possibly-short list and must not be cached as if it were whole.
+            function finish(complete) {
+              try {
+                var vpf = liveViewport(liveList()) || viewport;
+                if (vpf) {
+                  vpf.scrollTop = 0;
+                  try { vpf.dispatchEvent(new Event("scroll", { bubbles: true })); } catch (e2) {}
+                }
+              } catch (e) {}
+              // Last chance for a virtualized-away Liked: re-pin top + one
+              // more collect before giving up on it.
+              if (!hasLiked()) {
+                try { collect(); } catch (e) {}
+              }
+              var out = toList();
+              var targetF = maxSetsize ? Math.max(0, maxSetsize - 1) : 0;
+              var whole = !!complete && (!maxSetsize || out.length >= targetF) && hasLiked();
+              sweepLog.steps = steps;
+              sweepLog.target = targetF;
+              sweepLog.maxSetsize = maxSetsize;
+              sweepLog.rows = out.length;
+              sweepLog.bottomRounds = bottomRounds;
+              sweepLog.hasLiked = hasLiked();
+              sweepLog.complete = !!whole;
+              sweepLog.ms = Math.round(nowMsMs() - t0);
+              resolve(out);
+            }
+          });
+        });
+      });
     });
+  }
+
+  var sweepLog = {};
+
+  function nowMsMs() {
+    try {
+      return Date.now();
+    } catch (e) {
+      return 0;
+    }
   }
 
   function curationCancel(form) {
@@ -3471,7 +3861,7 @@
     } catch (e) {
       cancel = null;
     }
-    if (cancel) click(cancel);
+    if (cancel) userClick(cancel);
     else {
       try {
         var ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
@@ -3527,7 +3917,7 @@
         return { closed: true, usedDone: false };
       });
     }
-    click(done);
+    userClick(done);
     return waitFor(function () {
       try {
         if (findCurationList()) return null;
@@ -3544,11 +3934,29 @@
     });
   }
 
+  // The popper (form) a row lives in. Spotify keeps every tippy popper it has
+  // ever opened in the DOM, so a document-wide search for "the row with this
+  // uri" can land on a DIFFERENT popper's row — which is how a flip could be
+  // verified against an untouched duplicate and reported as a failure. Scope
+  // every row-level operation to the popper the row actually came from.
+  function curationScopeOf(el) {
+    try {
+      if (!el) return null;
+      var f = el.closest ? el.closest("form") : null;
+      if (f) return f;
+      var root = el.closest ? el.closest('div[data-tippy-root]') : null;
+      return root || el.parentElement || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Stages one row click (checkbox visual flip). Resolves true when the
   // row's aria-checked visibly flips (staging, not yet committed).
   // Re-resolved by URI, never by the raw aria-labelledby string: the row is a
   // fresh node after React re-renders, and the attribute lives on different
-  // elements across builds (see curationRowUri).
+  // elements across builds (see curationRowUri). The search is scoped to the
+  // SAME popper so a duplicate row in another popper cannot be mistaken for it.
   function stageRowClick(rowEl, wantState) {
     try {
       rowEl.click();
@@ -3556,18 +3964,22 @@
       return Promise.resolve(false);
     }
     var wantUri = "";
+    var scope = null;
     try {
       wantUri = curationRowUri(rowEl);
+      scope = curationScopeOf(rowEl);
     } catch (e) {}
     if (!wantUri) return Promise.resolve(false);
+    var searchIn = (scope && scope.querySelectorAll)
+      ? scope
+      : (document.querySelectorAll ? document : null);
+    if (!searchIn) return Promise.resolve(false);
     return waitFor(function () {
       var cur = null;
       try {
-        var all = document.querySelectorAll
-          ? Array.prototype.slice.call(
-              document.querySelectorAll('button[role="menuitemcheckbox"]')
-            )
-          : [];
+        var all = Array.prototype.slice.call(
+          searchIn.querySelectorAll('button[role="menuitemcheckbox"]')
+        );
         for (var i = 0; i < all.length; i++) {
           if (isInOurRoot(all[i])) continue;
           if (curationRowUri(all[i]) === wantUri) {
@@ -3588,41 +4000,33 @@
   }
 
   function ensureCurationSheet() {
-    var btn = null;
+    // There can be several curation buttons on the page (bottom-bar heart and
+    // a track-row heart), each with its own tippy popper. Try them in turn until
+    // one actually opens a sheet, instead of betting the whole read on whichever
+    // happens to be first in the DOM.
+    var cands = [];
     try {
-      btn = findCurationButton();
+      cands = findCurationButtons();
     } catch (e) {
-      btn = null;
+      cands = [];
     }
-    if (!btn) return Promise.resolve({ reason: "no-curation-button" });
+    if (!cands.length) return Promise.resolve({ reason: "no-curation-button" });
     var prevFocus = null;
     try {
       prevFocus = document.activeElement;
     } catch (e) {}
-    // The sheet lives in a tippy popper. A popper that cannot LAY OUT never
-    // mounts its rows, and then the sweep finds nothing and the caller
-    // silently degrades to the Your Library scrape — the wrong playlist list.
-    // So we do veil from the start (nothing may flash), but the veil only dims
-    // tippy roots instead of hiding them (see playlistVeilStart).
+    // Veil up front so no Spotify menu can flash. Safe only because the veil
+    // keeps tippy roots laid out and merely dims them (see
+    // playlistVeilStart): a popper that could not lay out would never mount
+    // its rows and the read would degrade to the library scrape.
     playlistVeilStart();
-    // Safety net: if the sheet still will not appear, some build is refusing
-    // to mount a dimmed popper. Drop the veil entirely and look once more
-    // before giving up — a visible sheet beats a wrong list.
-    function retryUnveiled() {
-      if (!playlistVeil) return waitSheet(2500);
-      playlistVeilStop();
-      return waitSheet(2500).then(function (found2) {
-        if (!found2) playlistVeilStart();
-        return found2;
-      });
+
+    var idx = 0;
+    function cur() {
+      return cands[idx] && cands[idx].el ? cands[idx].el : null;
     }
     function buttonChecked() {
-      var b = null;
-      try {
-        b = findCurationButton();
-      } catch (e) {
-        b = null;
-      }
+      var b = cur();
       if (!b) return null;
       try {
         var c = b.getAttribute("aria-checked");
@@ -3632,14 +4036,12 @@
       }
     }
     function clickButton() {
-      var b = null;
-      try {
-        b = findCurationButton();
-      } catch (e) {
-        b = null;
-      }
-      if (!b) return false;
-      return click(b);
+      var b = cur();
+      return b ? userClick(b) : false;
+    }
+    function nextCandidate() {
+      idx++;
+      return idx < cands.length;
     }
     function waitSheet(timeout) {
       return waitFor(function () {
@@ -3648,7 +4050,34 @@
         } catch (e) {
           return null;
         }
-      }, timeout || 2000, 80);
+      }, timeout || 2000, 50);
+    }
+    // The container alone is not enough: tippy mounts the popper first and the
+    // virtualized rows a beat later (slower on phone CPUs). A sweep that starts
+    // on an empty container returns [] and degrades to the wrong library list.
+    function waitSheetRows(timeout) {
+      return waitFor(function () {
+        try {
+          var ul = findCurationList();
+          if (!ul) return null;
+          var rows = ul.querySelectorAll
+            ? ul.querySelectorAll('button[role="menuitemcheckbox"]')
+            : [];
+          return rows && rows.length ? true : null;
+        } catch (e) {
+          return null;
+        }
+      }, timeout || 2500, 60);
+    }
+    // Safety net: if the sheet will not appear while veiled, drop the veil and
+    // look once more. A visible sheet beats a wrong list.
+    function retryUnveiled() {
+      if (!playlistVeil) return waitSheet(2500);
+      playlistVeilStop();
+      return waitSheet(2500).then(function (found2) {
+        if (!found2) playlistVeilStart();
+        return found2;
+      });
     }
     function fail(reason) {
       playlistVeilStop();
@@ -3657,41 +4086,194 @@
       } catch (e) {}
       return { reason: reason };
     }
-    var first = buttonChecked();
-    if (first === null) return Promise.resolve(fail("no-curation-button"));
-    if (first === true) {
+    // A stale popper still holding a leftover "Find a playlist" query renders
+    // ONLY its filtered subset (and no Liked Songs row) — yet it is visible,
+    // so "a list with rows" is not enough to call the open a success. Detect
+    // it: a non-empty searchbox, or a mounted list whose setsize promises more
+    // rows than are rendered and whose Liked row is absent. The stale DOM can
+    // never grow the missing rows (they were never rendered), so clear-and-wait
+    // once and then move on to the next candidate button, whose own popper is
+    // the live one.
+    function sheetSearchValue() {
+      try {
+        var ul = findCurationList();
+        var form = curationFormOf(ul);
+        var box = form && form.querySelector ? form.querySelector('input[role="searchbox"]') : null;
+        return box ? (box.value || "") : "";
+      } catch (e) { return ""; }
+    }
+    function sheetLooksStale() {
+      try {
+        var rows = curationLeafRows();
+        if (!rows.length) return false;
+        var hasLiked = false;
+        var maxSs = 0;
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].isLikedSongs) hasLiked = true;
+          try {
+            var ss = rows[i].el ? parseInt(rows[i].el.getAttribute("aria-setsize"), 10) : 0;
+            if (ss > maxSs) maxSs = ss;
+          } catch (e) {}
+        }
+        var q = "";
+        try { q = sheetSearchValue() || ""; } catch (e2) {}
+        // Leftover query filtering the list.
+        if (q && q.trim()) return true;
+        // setsize promises ≥2 more rows than rendered and Liked is absent:
+        // a filtered/virtualized-away top, not a genuine short list.
+        if (maxSs && rows.length + 1 < maxSs && !hasLiked) return true;
+        return false;
+      } catch (e) { return false; }
+    }
+    function closeStaleSheet() {
+      var ul = null;
+      var form = null;
+      try {
+        ul = findCurationList();
+        form = curationFormOf(ul);
+      } catch (e) {}
+      var cancel = null;
+      try { cancel = form ? curationCancel(form) : null; } catch (e2) {}
+      if (cancel) {
+        try { userClick(cancel); } catch (e3) {}
+      } else {
+        try {
+          var ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+          ev.__spmSynthetic = true;
+          document.dispatchEvent(ev);
+        } catch (e4) {}
+      }
+      return waitFor(function () {
+        try { return sheetLooksStale() ? null : true; } catch (e) { return true; }
+      }, 800, 80).then(function () { return true; });
+    }
+    // Saved state: ONE tap opens the sheet. Three ways this can go wrong, handled
+    // in order of how likely they are:
+    //   1. the tap produced NO change at all in the popper/list surface — the
+    //      handler never ran (Android refusing a bare synthetic click), so tap
+    //      again (with hover prelude + full touch+mouse sequence);
+    //   2. something appeared but no visible list/rows — wait for rows, then
+    //      drop the veil and wait again (a popper that will not lay out while
+    //      dimmed);
+    //   3. the list that appeared is a STALE filtered popper (leftover query) —
+    //      close it and move on to the next candidate button, whose popper is live;
+    //   4. still nothing — move on to the next candidate button.
+    function openFromSaved(attempt) {
+      var tries = attempt || 0;
+      var before = curationSurfaceCount();
       clickButton();
       return waitSheet().then(function (found) {
-        if (!found) return retryUnveiled().then(function (found2) {
-          if (!found2) return fail("sheet-unavailable");
-          return { transient: false, prevFocus: prevFocus };
+        if (found) {
+          // Container is up — but rows may still be mounting. Require rows
+          // before calling it open, else the sweep races an empty list.
+          return waitSheetRows(2500).then(function (rows) {
+            if (!rows) {
+              // Rows never mounted under this veil: drop it and look again.
+              return retryUnveiled().then(function (found2) {
+                if (!found2) {
+                  if (nextCandidate()) return openFromSaved(0);
+                  return false;
+                }
+                return waitSheetRows(2500).then(function (rows2) {
+                  if (!rows2) {
+                    if (nextCandidate()) return openFromSaved(0);
+                    return false;
+                  }
+                  if (sheetLooksStale()) {
+                    return closeStaleSheet().then(function () {
+                      if (nextCandidate()) return openFromSaved(0);
+                      return false;
+                    });
+                  }
+                  return true;
+                });
+              });
+            }
+            if (sheetLooksStale()) {
+              // Try to rescue by clearing the leftover query first: a live
+              // popper re-renders unfiltered, a truly stale one cannot.
+              var cleared = false;
+              try {
+                var ulS = findCurationList();
+                var formS = curationFormOf(ulS);
+                var boxS = formS && formS.querySelector ? formS.querySelector('input[role="searchbox"]') : null;
+                if (boxS && (boxS.value || "")) {
+                  setNativeInputValue(boxS, "");
+                  cleared = true;
+                }
+              } catch (e) {}
+              if (cleared) {
+                return waitFor(function () {
+                  try { return sheetLooksStale() ? null : true; } catch (e) { return true; }
+                }, 900, 80).then(function () {
+                  if (!sheetLooksStale()) return true;
+                  return closeStaleSheet().then(function () {
+                    if (nextCandidate()) return openFromSaved(0);
+                    return true; // last resort: sweep what we have (marks partial)
+                  });
+                });
+              }
+              return closeStaleSheet().then(function () {
+                if (nextCandidate()) return openFromSaved(0);
+                return true; // no more candidates: sweep what we have (marks partial)
+              });
+            }
+            return true;
+          });
+        }
+        var after = curationSurfaceCount();
+        if (after === before && tries < 2) {
+          // Nothing whatsoever happened: the tap did not land. Try again —
+          // the second attempt re-scrolls into view + refocuses inside userClick.
+          return openFromSaved(tries + 1);
+        }
+        return retryUnveiled().then(function (found2) {
+          if (found2) {
+            return waitSheetRows(2500).then(function (r2) {
+              if (!r2) {
+                if (nextCandidate()) return openFromSaved(0);
+                return false;
+              }
+              if (sheetLooksStale()) {
+                return closeStaleSheet().then(function () {
+                  if (nextCandidate()) return openFromSaved(0);
+                  return true;
+                });
+              }
+              return true;
+            });
+          }
+          if (nextCandidate()) return openFromSaved(0);
+          return false;
         });
+      });
+    }
+
+    var first = buttonChecked();
+    if (first === null) return Promise.resolve(fail("no-curation-button"));
+
+    if (first === true) {
+      return openFromSaved().then(function (ok) {
+        if (!ok) return fail("sheet-unavailable");
         return { transient: false, prevFocus: prevFocus };
       });
     }
-    // Unsaved: click#1 really Likes (transient), click#2 opens the sheet.
+
+    // Unsaved: click#1 really Likes (transient). The track is now saved, so any
+    // candidate should open on a single click from here.
     clickButton();
     return waitFor(function () {
-      var c = buttonChecked();
-      return c === true ? true : null;
-    }, 2000, 80).then(function (liked) {
+      return buttonChecked() === true ? true : null;
+    }, 2000, 60).then(function (liked) {
       if (!liked) return fail("like-failed");
-      clickButton();
-      return waitSheet().then(function (found) {
-        if (!found) {
-          found = retryUnveiled();
-        }
-        return Promise.resolve(found).then(function (found2) {
-          if (!found2) {
-            // Sheet didn't open with a transient Like outstanding: take it
-            // back via the symmetric toggle if there is one, else report the
-            // leak explicitly (never silently keep it).
-            return restoreTransientLike().then(function (restored) {
-              if (restored) return fail("sheet-unavailable");
-              return fail("sheet-unavailable-transient");
-            });
-          }
-          return { transient: true, prevFocus: prevFocus };
+      return openFromSaved().then(function (ok) {
+        if (ok) return { transient: true, prevFocus: prevFocus };
+        // Sheet didn't open with a transient Like outstanding: take it back via
+        // the symmetric toggle if there is one, else report the leak
+        // explicitly (never silently keep it).
+        return restoreTransientLike().then(function (restored) {
+          if (restored) return fail("sheet-unavailable");
+          return fail("sheet-unavailable-transient");
         });
       });
     });
@@ -3708,7 +4290,7 @@
     } catch (e) {
       sym = null;
     }
-    if (sym) click(sym);
+    if (sym) userClick(sym);
     return waitFor(function () {
       var c = null;
       try {
@@ -3794,7 +4376,7 @@
         });
         if (!transient) {
           return finishCurationOp(prevFocus).then(function () {
-            return { list: list };
+            return { list: list, complete: !!sweepLog.complete };
           });
         }
         // Commit the transient restore through Done (Cancel would discard
@@ -3803,15 +4385,15 @@
           if (!staged || !staged.staged) {
             return restoreTransientLike().then(function () {
               return finishCurationOp(prevFocus).then(function () {
-                return { list: list };
+                return { list: list, complete: !!sweepLog.complete };
               });
             });
           }
           return finishCurationSave(prevFocus).then(function (commit) {
-            if (commit && commit.usedDone) return { list: list };
+            if (commit && commit.usedDone) return { list: list, complete: !!sweepLog.complete };
             // No Done: Cancel already closed; verify the unlike stuck.
             return restoreTransientLike().then(function () {
-              return { list: list };
+              return { list: list, complete: !!sweepLog.complete };
             });
           });
         });
@@ -4144,7 +4726,15 @@
         trackKey: keyNow,
         empty: res.list.length <= 1,
         viaCuration: true,
+        // Did the sweep actually see the whole list? A partial sweep must not be
+        // cached as if it were the real thing, or a short list sticks for the
+        // whole TTL and every open shows it.
+        complete: res.complete !== false,
+        sweep: sweepLog,
       };
+      if (!playlistCache.complete) {
+        playlistCache.reason = "partial-sweep";
+      }
       return playlistCache.list;
     }).catch(function () {
       return null;
@@ -4172,7 +4762,7 @@
     if (sym) {
       var clicked = false;
       try {
-        clicked = click(sym);
+        clicked = userClick(sym);
       } catch (e) {
         clicked = false;
       }
@@ -4385,7 +4975,22 @@
   function getPlaylists(opts) {
     opts = opts || {};
     var keyNow = trackKeyNow();
-    var maxAge = typeof opts.maxAge === "number" ? opts.maxAge : 8000;
+    // A curation-backed list came straight out of Spotify's own sheet, so it is
+    // server truth — and re-reading it means driving that sheet again (open,
+    // sweep, close), which is the slowest thing we do. Hold it noticeably
+    // longer. Our own writes update this cache in place, so a longer TTL cannot
+    // show a stale membership. The library-scraped fallback keeps the short one.
+    //
+    // A sweep that could not prove it saw every row expires almost immediately
+    // instead: serving a possibly-short list for 25s is exactly the "randomly
+    // missing playlists" symptom, so the next open retries.
+    var maxAge = typeof opts.maxAge === "number"
+      ? opts.maxAge
+      : playlistCache.complete === false
+        ? 1200
+        : playlistCache.viaCuration
+          ? 25000
+          : 8000;
     var sameTrack = playlistCache.trackKey === keyNow;
     if (opts.cached || (!opts.fresh && sameTrack && playlistCache.at && Date.now() - playlistCache.at < maxAge)) {
       // Re-stamp without reopening anything: the list shape is cached, but
@@ -4444,10 +5049,14 @@
       empty: !!playlistCache.empty,
       updatedAt: playlistCache.at,
       trackKey: playlistCache.trackKey,
-      // Which source produced this list. "curation" = Spotify's own
+// Which source produced this list. "curation" = Spotify's own
       // Add-to-playlist sheet (the correct list). Anything else means the
-      // fallback (Your Library scrape) won — i.e. the wrong list.
+      // fallback (Your Library scrape) — i.e. the wrong list.
       viaCuration: !!playlistCache.viaCuration,
+      // False when the sweep could not prove it read every row: the list may be
+      // short, and it is cached only briefly so the next open retries.
+      complete: playlistCache.complete !== false,
+      sweep: playlistCache.sweep || null,
     };
   }
 

@@ -438,18 +438,206 @@ reopen persistence, Escape + swipe-down close.
 
 ### Buttons inside the sheet header
 
-Both sheets bind `pointerdown` on their header to start the swipe-down-to-close
-gesture, and that handler calls `preventDefault()`. Browsers suppress the
-compatibility mouse events when `pointerdown` is prevented — **including the
-`click`** — so every button inside the header was inert: `.spm-pclose` and
-`.spm-dclose` did nothing at all.
+The sheets have **no close button**: they close by swipe-down, tapping the
+backdrop, or Escape. Both sheet headers bind `pointerdown` to start the
+swipe-down gesture and that handler calls `preventDefault()`, which makes
+browsers suppress the compatibility mouse events — **including the `click`** —
+so anything button-like in a header would be inert anyway. Both drag handlers
+therefore ignore a press that started on a control.
 
-Both drag handlers now ignore a press that started on a control, matching the
-guard the main card already used. Worth knowing when testing: a bare
-`element.click()` cannot catch this class of bug, because it never goes through
-`pointerdown`. `tests/probe-ui.js` dispatches a real pointerdown → pointerup →
-click sequence and honours `dispatchEvent`'s return value, which is false
-exactly when the default was prevented.
+Worth knowing when testing: a bare `element.click()` cannot catch that class of
+bug, because it never goes through `pointerdown`. `tests/probe-ui.js` dispatches
+a real pointerdown → pointerup → click sequence and honours `dispatchEvent`'s
+return value, which is false exactly when the default was prevented.
+
+### The ghost click that opened Devices
+
+Tapping the mini player expands it on `pointerup`, which reveals `.spm-card`
+*under the finger*. The browser then synthesises its `click` by hit-testing the
+**new** layout, so the click is dispatched to whatever card control now occupies
+that point — the Devices button, typically. Neither the mini's own guards nor a
+`stopPropagation` inside the mini can help: the click never reaches the mini.
+
+`expandAnimated(true)` arms a short-lived guard (450ms) and a capture-phase
+listener on `document` swallows that one click. It is armed **only** on the
+pointer path: when expanding from the click fallback the click is already being
+dispatched and the capture listener has already run for it, so arming there
+would eat the user's next deliberate tap.
+
+### Mid-edit reloads (the "random" staging)
+
+The sheet reloads when it believes the track changed. That belief was wrong in
+three separate ways, each of which blanked the sheet to "Loading…" and threw away
+the user's staged checks — on a phone that happens often enough to look random:
+
+- The key was `track | artist`. Playlist membership is **per-track**, and
+  Spotify frequently renders the title before the artist, so a late-loading
+  artist looked like a new track. The key is now the track alone.
+- A snapshot with no track at all is a transient glitch (Spotify mid-re-render),
+  not a change. Those are ignored outright.
+- The open-time key was seeded from `lastSnap`, which *lags* the real track
+  (snapshots are mutation- or 2s-cadence driven), so the very first snapshot
+  after opening always looked like a change. It is now seeded from the live
+  `getSnapshot()`.
+
+A genuine track change still reloads and still discards the draft, but keeps the
+rows on screen rather than blanking to a spinner — only the membership values
+are stale, and an empty flash reads as breakage.
+
+### The tap was only ever a `click`, and on Android that opened nothing
+
+This is the root cause of the whole intermittent saga, and it explains the
+symptom nobody could pin down: **the menu never appeared at all.**
+
+`#curation-sheet-list` does not exist in the DOM until a curation button opens
+its popper — measured in `tests/diagnose-playlists.js` **GATE 0**, which reports
+the popper/list/searchbox count *before* the tap. So the tap is the entire read:
+if it does not open the popper, there is nothing to scrape and the read silently
+degrades to the Your Library scrape. A short list is what that fallback returns.
+
+The adapter was firing:
+
+```js
+el.click();   // a single `click` event
+```
+
+A real tap is `pointerdown → mousedown → pointerup → mouseup → click`, and
+popper libraries open on the pointer/mouse **down**, not on click. On desktop a
+bare `click` happened to be enough; on Android it did nothing.
+
+Reproduced in `tests/real-dom-lazy-popper.html` — no popper in the DOM at all,
+and the button opens on `pointerdown`:
+
+| | events the button saw | poppers created | rows read |
+| --- | --- | --- | --- |
+| bare `el.click()` | `["click","click","click"]` | **0** | **1** (library) |
+| full tap | `["pointerdown","click"]` | 1 | **7** (correct) |
+
+`userClick()` now presents the same sequence a finger would — Spotify's own
+handler still runs, we are not simulating anything extra. It is used for every
+**Spotify-owned** control we drive: the curation heart, the Connect button, the
+sheet's Done/Cancel, and the symmetric like button. (Rows we click inside
+Spotify's sheet keep a plain `click()`.)
+
+`openFromSaved()` also distinguishes "the tap landed but nothing mounted" from
+"the tap did nothing at all": if the popper/list surface is completely unchanged
+after a tap it taps again (up to twice) before moving on to another button.
+
+### Tippy keeps every popper it ever opened (the filtered/short list)
+
+This was the real cause of the "randomly filtered and incomplete playlist list".
+
+The page accumulates one `div[data-tippy-root]` per menu instance for the whole
+session — `tippy-36` from the bottom-bar heart, `tippy-37` from the track-row
+heart, and so on. Each popper keeps its own `#curation-sheet-list` **and its own
+"Find a playlist" input**, holding whatever query was last typed into it.
+
+The reader did:
+
+```js
+document.getElementById("curation-sheet-list")   // <-- the FIRST match
+```
+
+That returns whichever popper happens to be first in document order, regardless
+of which one is live. So the read could:
+
+- pick a **stale, already-closed** popper → `isVisible` fails → the whole read
+  aborts → silent fallback to the Your Library scrape (a different list);
+- pick a stale popper that is **still measurable and still filtered** → return
+  that short, filtered list as if it were the truth.
+
+Reproduced in `tests/real-dom-stale-popper.html`: two poppers, the first still on
+screen holding a leftover `MMXXVI` query. The old finder returns **4 rows**; the
+new one returns all 8.
+
+Fixes:
+
+- `findCurationList()` enumerates **every** candidate and returns the first
+  *visible* one, newest first (tippy appends new popper roots to the end of
+  `<body>`). It no longer trusts `getElementById`.
+- `findCurationButtons()` returns **all** curation buttons (bottom-bar heart and
+  track-row heart each render one) and `ensureCurationSheet()` tries them in turn
+  until one actually opens a sheet, instead of betting the read on whichever is
+  first in the DOM.
+- `stageRowClick()` scopes its flip verification to **the popper the row came
+  from**. A document-wide search for "the row with this uri" can match a
+  *different* popper's untouched duplicate and report a successful add as a
+  failure. The same scoping applies to every row-level operation.
+
+### Card buttons vs the card's own scrolling
+
+`.spm-card` is an `overflow-y: auto` scroller and every button used to be
+`touch-action: manipulation` — which still permits panning. On a phone the small
+finger movement of an ordinary tap could tip the browser into a scroll; it then
+fires `pointercancel` and suppresses the `click`, so the button's own
+`pointerup`/`click` never ran and the tap did nothing. That is why **Connect
+devices** (and the rest of the card's controls) felt random: it depended on
+whether the card happened to be scrollable at that moment, which the desktop
+harness never reproduces.
+
+- `#spm-root .spm-card button` is now `touch-action: none`, so a press on a
+  control can never be stolen by the card's scroll.
+- `Connect devices` activates on press-release, and a release that **travelled**
+  (>12px) is rejected — that was a scroll or a drag, not a tap. The synthesized
+  click that follows is suppressed too, so a scroll can never open the sheet by
+  accident. A clean tap still opens it, and a bare `.click()` (keyboard) still
+  works.
+
+### Two lists, randomly: the cache was painting the wrong source
+
+The sheet kept a playlist list in memory, and that was the whole bug:
+
+- `getCachedPlaylists()` returned the list with **no record of where it came
+  from**, and `beginPSheet` painted it synchronously. If the previous read had
+  fallen back to the Your Library scrape, the sheet showed *that* list instantly
+  and then visibly flipped to the real one a beat later. Two different lists,
+  appearing at random.
+- `loadPSheetPlaylists` then called `getPlaylists()` **without `fresh`**, so
+  after painting the cache it re-read the cache. Whichever source won last stayed
+  on screen for its whole TTL, and one failed read pinned the wrong list for
+  seconds.
+
+Now:
+
+- The cache is a **paint-only** optimisation, and only when it is trustworthy —
+  `viaCuration === true` and `complete !== false`. A wrong-source or
+  possibly-short cache shows a loading state instead of being passed off as the
+  playlist list.
+- Every open follows with a **fresh** read (`refreshPlaylists()`), so the sheet
+  converges on Spotify's own sheet each time rather than replaying the cache.
+
+### Reading the whole sheet reliably
+
+`sweepCurationRows` collects rows by URI while scrolling the virtualized list.
+Two things made it return partial or *filtered* results:
+
+- **A leftover "Find a playlist" query.** Spotify keeps it in component state
+  and the tippy popper is reused across opens, so a read could inherit a query
+  and return a filtered list — decided entirely by whether an earlier write (via
+  `ensureVisible`) had seeded the box. Every read now clears it first.
+- **A bad end-of-list signal.** The sweep used to give up when `scrollTop` stopped
+  moving, which is not reliable: on a short phone viewport rows mount lazily, so
+  the scroller can sit still with rows still pending. It now prefers
+  `aria-setsize` and otherwise requires actually reaching the bottom, confirmed
+  twice.
+
+A sweep that cannot *prove* it saw every row marks the result `complete: false`,
+and such a list is cached for only 1.2s instead of 25s. Without that, one short
+read became sticky for the whole TTL and every subsequent open replayed it —
+which is precisely the "randomly missing playlists" symptom. `getPlaylistsState()`
+exposes `complete` and a `sweep` log (`steps`, `target`, `rows`, `complete`, `ms`)
+so a short read is visible instead of silent.
+
+### Sheet-open latency
+
+Opening a sheet used to mean a quarter-second spinner even when a correct list
+was already in memory, because the cached paint sat behind the same deferred
+timer as the fresh read. Now `beginPSheet` paints the cache **synchronously**
+before the slide starts, and only defers the reconciliation. A curation-backed
+list is server truth read from Spotify's own sheet, so it is cached for 25s
+instead of 8s — re-reading it means driving that sheet again, which is the
+slowest thing we do; our own writes update that cache in place, so the longer TTL
+cannot show stale membership.
 
 ## The Liked flourish
 
@@ -547,9 +735,12 @@ server — they drive `file://` over the Chrome DevTools Protocol):
 | --- | --- |
 | `npm run test:curation` | `tests/real-dom-curation.html` — the curation sheet built from DOM pasted off open.spotify.com. Asserts all rows are parsed (id / uri / name / artwork / membership) and that add, remove and bulk-draft really commit, with no Like leaked by the transient dance. |
 | `npm run test:tippy` | `tests/real-dom-tippy.html` — the same sheet inside its real `div[data-tippy-root] > div#context-menu` portal, driven by a fake popper that only lays out once it is actually visible. This is what caught the veil deadlock below. |
-| `npm run test:sheet` | `tests/harness.html` + `tests/probe-sheet.js` — taps our own heart, asserts the sheet lists **every** playlist, stages a row and presses Done, then verifies against the harness's server-side membership and checks no native menu leaked behind the sheet. |
+| `npm run test:stale` | `tests/real-dom-stale-popper.html` — **two** poppers, the first still on screen holding a leftover search query, exactly as a real session accumulates. Asserts the full list is read and an add commits. The old `getElementById` finder returns 4 of 8 rows here. |
+| `npm run test:lazy` | `tests/real-dom-lazy-popper.html` — **no** popper or list in the DOM to begin with, and the button opens on `pointerdown`. Models the Android case where a bare `el.click()` opens nothing. The old click fires 3 clicks, builds 0 poppers and reads 1 row; the full tap builds the popper and reads the whole list. |
+| `npm run test:sheet` | `tests/harness.html` + `tests/probe-sheet.js` — taps our own heart, asserts the sheet lists **every** playlist, then stages a row, samples the sheet while snapshots stream in (it must neither blank nor revert), presses Done, and verifies against the harness's server-side membership. Also asserts no native menu leaked. |
 | `npm run test:fallback` | `tests/harness.html` + `tests/probe-fallback.js` — forces the fallback (curation button hidden) and asserts the merged library+submenu list has no duplicates, no rows without an id, and exact `spotify:` uris. |
-| `npm run test:ui` | `tests/harness.html` + `tests/probe-ui.js` — both sheets' top-right close buttons actually close (with a real pointer sequence, since a bare `.click()` can never catch a `pointerdown` that prevents default), the header swipe still works, and the heart flourish fires on the OFF→ON transition only, survives the icon swap, cleans up, skips hidden hearts, and respects reduced-motion. |
+| `npm run test:ui` | `tests/harness.html` + `tests/probe-ui.js` — the sheets have **no** close button but still close by backdrop and by header swipe; card buttons are immune to the card's own scrolling and a travelling press never opens Devices; expanding the mini player does **not** ghost-click a card control; and the heart flourish fires on the OFF→ON transition only, survives the icon swap, cleans up, skips hidden hearts, and respects reduced-motion. |
+| `npm run test:flaky` | `tests/harness.html` + `tests/probe-flaky.js` — hammers the intermittent paths: taps **Connect devices** 25 times (every tap must open it), opens the playlist sheet 12 times (every open must list every row, from the curation source, with no failure reason), then forces the library fallback and asserts a wrong-source cache is **never** painted as if it were the playlist list. Written because both bugs were intermittent and a single check proved nothing. |
 
 `tests/cdp-run.js` and `tests/cdp-probe.js` are the two drivers (both take a
 repo-relative path). The harness's fake rows deliberately mirror the real row
@@ -564,16 +755,21 @@ loaded `open.spotify.com` tab. It reports, gate by gate, whether the extension
 is really reading Spotify's own Add-to-playlist sheet:
 
 ```text
+GATE 0  does the menu exist BEFORE we tap? (popper/list/searchbox counts)
 GATE 1  curation button found (and why not, if it isn't)
 GATE 2  liked state
 GATE 3  does clicking it open the sheet, and how long it took
 GATE 4  rows in the sheet, and how each row's identity resolved
-GATE 5  source that won: "curation" (correct) or "library" (wrong)
+GATE 5  source that won: "curation" (correct) or "library" (wrong),
+        plus whether the sweep could prove it read every row
+GATE 6  the sheet opened 6 times in a row: rows per open, source, and
+        whether any open came back possibly-short
 SHEET    the rows currently rendered in OUR OWN bottom sheet
 ```
 
 GATE 5 is the one that matters — `library` means the sheet read lost and the
-wrong list is being shown.
+wrong list is being shown. GATE 6 exists because the bug is intermittent: one
+clean read proves nothing.
 
 ## Limitations (honest)
 

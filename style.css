@@ -119,6 +119,21 @@
   -webkit-user-select: none;
 }
 
+/* A press that STARTS on a control must never be stolen by the card's own
+ * scrolling. .spm-card is an overflow-y:auto scroller, and `touch-action:
+ * manipulation` still permits panning — so on a phone, the small finger
+ * movement of an ordinary tap could tip the browser into a scroll. It then
+ * fires pointercancel and suppresses the click, so the button's own
+ * pointerup/click never ran and the tap did nothing. That is why "Connect
+ * devices" (and the rest of the card's controls) felt random: it depended on
+ * whether the card happened to be scrollable at that moment.
+ *
+ * `none` means a drag starting on a button will not scroll the card; scroll
+ * from the artwork/titles as usual. */
+#spm-root .spm-card button {
+  touch-action: none;
+}
+
 #spm-root button:focus-visible,
 #spm-root .spm-bar:focus-visible {
   outline: 2px solid currentColor;
@@ -1616,7 +1631,7 @@
 #spm-root .spm-dhead {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 10px;
   padding: 2px 22px 8px;
   touch-action: none;
@@ -1923,7 +1938,7 @@
 #spm-root .spm-phead {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 10px;
   padding: 2px 22px 8px;
   touch-action: none;

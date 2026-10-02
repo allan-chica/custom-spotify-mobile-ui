@@ -133,6 +133,26 @@
     say("    leaked veil    = " + !!$('style[data-spm="playlist-veil"]'));
     say("    tippy roots    = " + $$("[data-tippy-root]").length);
 
+    h("GATE 0  does the menu exist BEFORE we click?");
+    // Your key question: if the popper/list is not in the DOM until something
+    // opens it, then the click is the whole game — and if it silently does
+    // nothing we have nothing to scrape.
+    say("    [data-tippy-root] nodes     = " + $$("[data-tippy-root]").length);
+    say("    #curation-sheet-list nodes = " + $$("#curation-sheet-list").length);
+    say("    visible #curation-sheet-list = " +
+      $$("#curation-sheet-list").filter((u) => {
+        const r = u.getBoundingClientRect();
+        return u.getClientRects().length > 0 && r.width > 0 && r.height > 0;
+      }).length);
+    say("    searchboxes present     = " + $$('input[role="searchbox"]').length);
+    $$('input[role="searchbox"]').slice(0, 6).forEach((b, i) => {
+      say("      searchbox[" + i + "] value = " + JSON.stringify(b.value));
+    });
+    if (!$$("#curation-sheet-list").length) {
+      say("    -> NO list in the DOM yet. It only appears once a curation button");
+      say("       actually opens its popper, so the tap below is the whole test.");
+    }
+
     h("GATE 1  curation button (the heart that opens the list)");
     let btn = curationButton();
     say("    " + (btn
@@ -221,6 +241,11 @@
     say("    source        = " + (st.viaCuration ? '"curation"  <- CORRECT (Spotify\'s own sheet)'
                                                 : '"library"   <- WRONG (Your Library scrape)'));
     say("    ok flag       = " + st.ok + "   reason=" + JSON.stringify(st.reason));
+    say("    complete      = " + st.complete + (st.complete === false
+      ? "   <-- sweep could NOT prove it read every row (list may be short)" : ""));
+    if (st.sweep) {
+      say("    sweep         = " + JSON.stringify(st.sweep));
+    }
     say("");
     const blank = rows.filter((p) => !p.id && !p.isLikedSongs).length;
     if (blank) say("    !! " + blank + " row(s) have an EMPTY id — these are the broken ones");
@@ -233,6 +258,56 @@
       say("      " + (p.containsTrack ? "[x] " : "[ ] ") + pad(JSON.stringify(p.id), 26) +
           pad(p.name || "", 26) + pad(p.subtitle || "", 16) + (p.artwork ? "" : "(no artwork)"));
     });
+
+    h("GATE 6  repeat opens through OUR OWN sheet (the reported symptom)");
+    // The bug is intermittent, so one clean read proves nothing. Open the sheet
+    // several times the way a person does and report every open.
+    const rootEl = document.getElementById("spm-root");
+    const rowsPerOpen = [];
+    const srcPerOpen = [];
+    const okPerOpen = [];
+    for (let i = 0; i < 6; i++) {
+      const heart = document.querySelector("#spm-root .spm-like");
+      const mini = document.querySelector("#spm-root .spm-mini-like");
+      // Tap whichever heart is on screen (the mini bar when collapsed).
+      const target = heart && heart.offsetParent ? heart : mini;
+      if (!target) break;
+      target.click();
+      const openedSheet = await waitFor(() => {
+        const s = document.querySelector("#spm-root .spm-psheet");
+        return s && !s.hasAttribute("hidden");
+      }, 8000);
+      if (!openedSheet) { rowsPerOpen.push("NOOPEN"); break; }
+      await waitFor(() => {
+        const l = document.querySelector("#spm-root .spm-plist");
+        return l && l.children.length > 0;
+      }, 8000);
+      await sleep(900); // let the deferred fresh read land
+      const list = document.querySelector("#spm-root .spm-plist");
+      rowsPerOpen.push(list ? list.children.length : 0);
+      const s2 = sp.getPlaylistsState();
+      srcPerOpen.push(s2.viaCuration ? "cur" : "LIB");
+      okPerOpen.push(s2.complete === false ? "PARTIAL" : "whole");
+      const back = document.querySelector("#spm-root .spm-pbackdrop");
+      if (back) back.click();
+      await waitFor(() => {
+        const s = document.querySelector("#spm-root .spm-psheet");
+        return s && s.hasAttribute("hidden");
+      }, 6000);
+      await sleep(250);
+    }
+    say("    rows per open : " + rowsPerOpen.join(", "));
+    say("    source        : " + srcPerOpen.join(", "));
+    say("    completeness  : " + okPerOpen.join(", "));
+    if (okPerOpen.indexOf("PARTIAL") !== -1) {
+      say("    !! at least one open returned a possibly-SHORT list.");
+      say("       Repeat this a few times; if PARTIAL or a low row count shows up,");
+      say("       send me this output — that is the thread to pull.");
+    }
+    if (srcPerOpen.indexOf("LIB") !== -1) {
+      say("    !! at least one open fell back to the LIBRARY list (the wrong list).");
+    }
+    void rootEl;
 
     h("OUR OWN SHEET (as rendered right now)");
     const ours = $$("#spm-root .spm-plist .spm-pitem").map((li) =>

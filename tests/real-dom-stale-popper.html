@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SPM — stale popper fixture</title>
+<style>
+  body { font: 13px system-ui; margin: 0; background: #121212; color: #fff; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; height: 90px; background: #000;
+           display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  [data-testid="now-playing-widget"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] { display: flex; align-items: center; gap: 8px; }
+  [data-encore-id="listRow"] [data-encore-id="listRowTitle"] { flex: 1; }
+  img[data-testid="entity-image"] { width: 32px; height: 32px; }
+  .popper { position: absolute; }
+  .popper.hidden { display: none; }
+  /* A leftover popper that was never torn down: still on screen (so still
+     measurable) but showing its last, filtered state. */
+  .popper.stale { opacity: 0.25; }
+</style>
+</head>
+<body>
+<pre id="out">running</pre>
+
+<!-- Two curation buttons, exactly like the report: the bottom-bar heart and a
+     track-row heart. Each opens ITS OWN tippy popper. -->
+<footer data-testid="now-playing-bar">
+  <div data-testid="now-playing-widget">
+    <img data-testid="cover-art-image" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">
+    <a href="/track/abc123">Real Track</a>
+    <button aria-checked="true" class="e-10860-legacy-button e-10860-legacy-button-tertiary encore-internal-color-text-bright-accent" aria-label="Add to playlist" data-encore-id="buttonTertiary"><span></span></button>
+  </div>
+  <button data-testid="control-button-playpause" aria-label="Pause">||</button>
+  <!-- The SECOND button from the report: no aria-expanded, extra generated class -->
+  <button aria-checked="true" class="e-10860-legacy-button e-10860-legacy-button-tertiary encore-internal-color-text-subdued JG8O5OlK9DMmaCPYFSnn" aria-label="Add to Liked Songs" data-encore-id="buttonTertiary"><span></span></button>
+  <button data-testid="add-button" aria-label="Remove from Liked Songs" aria-checked="true">&#9829;</button>
+</footer>
+
+<script src="../spotifyAdapter.js"></script>
+<script>
+var LIKED_URI = "spotify:collection:tracks";
+var PLAYLISTS = [
+  ["spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", "web swinging in nyc"],
+  ["spotify:playlist:4zZa7QE5aV82huyDbtR8En", "IX \u00b7 MMXXVI"],
+  ["spotify:playlist:0GSoubNd1aMs7hJjdedYcf", "VI \u00b7 MMXXVI"],
+  ["spotify:playlist:4SX1HQaUaInlyuZWP3Q7j7", "V \u00b7 MMXXVI"],
+  ["spotify:playlist:00w41uqROQymsUsla3Vk63", "IV \u00b7 MMXXVI"],
+  ["spotify:playlist:6rfoNwFpRr2uJ5MGlXfaxY", "My playlist #9"],
+  ["spotify:playlist:5xOYHulYoliZZLm5LktVFz", "pothos \ud83c\udf3f"],
+];
+var membership = {};
+var liked = true;
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function rowHtml(uri, name, pos, setsize) {
+  var checked = uri === LIKED_URI ? liked : !!membership[uri];
+  return '<li role="presentation" data-depth="0">' +
+    '<button class="QpDFZgzjNoy0kJn5o07g" role="menuitemcheckbox" aria-checked="' +
+      (checked ? "true" : "false") + '" aria-setsize="' + setsize + '" aria-posinset="' + pos + '" tabindex="-1">' +
+      '<div data-encore-id="listRow" role="group" aria-labelledby="listrow-title-' + uri + '">' +
+        '<div class="hdr-side"><div class="hdr-flex"><div style="width:32px;height:32px">' +
+          '<img data-testid="entity-image" alt="' + esc(name) + '" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">' +
+        '</div></div></div>' +
+        '<div class="hdr"><div class="col">' +
+          '<p class="ttl" data-encore-id="listRowTitle" id="listrow-title-' + uri + '">' + esc(name) + '</p>' +
+        '</div></div>' +
+      '</div></button></li>';
+}
+// A popper for ONE button instance. `query` seeds the searchbox — used to model
+// the stale popper that still holds a previous search.
+function popperHTML(id, query) {
+  var setsize = PLAYLISTS.length + 2;
+  var q = (query || "").toLowerCase();
+  var rows = '<li role="presentation" data-depth="0"><button role="menuitem" aria-setsize="' + setsize +
+    '" aria-posinset="1" tabindex="-1"><div data-encore-id="listRow" role="group" aria-labelledby="listrow-title-new-playlist">' +
+    '<div class="hdr"><div class="col"><p class="ttl" data-encore-id="listRowTitle" id="listrow-title-new-playlist">New playlist</p>' +
+    '</div></div></div></button></li>';
+  // A popper built with a leftover query renders ONLY the matching rows —
+  // that is the "filtered list" symptom.
+  rows += q ? "" : rowHtml(LIKED_URI, "Liked Songs", 2, setsize);
+  PLAYLISTS.forEach(function (p, i) {
+    if (q && p[1].toLowerCase().indexOf(q) === -1) return;
+    rows += rowHtml(p[0], p[1], i + 3, setsize);
+  });
+  return '<div data-tippy-root="" id="' + id + '" class="popper' + (query ? " stale" : " hidden") + '">' +
+    '<div id="context-menu" data-testid="context-menu">' +
+      '<form class="y_CFKW8usK4BrguFZgGF">' +
+        '<div class="hdr-t"><span data-encore-id="text">Add to playlist</span></div>' +
+        '<div class="search"><div role="search">' +
+          '<input role="searchbox" maxlength="80" placeholder="Find a playlist" aria-label="Find a playlist" value="' +
+            esc(query || "") + '">' +
+        '</div></div>' +
+        '<ul tabindex="0" role="menu" data-depth="0" aria-label="Add to playlist menu" id="curation-sheet-list" data-roving-interactive="1">' +
+          rows +
+        '</ul>' +
+        '<div class="foot">' +
+          '<button type="button" data-encore-id="buttonTertiary">Cancel</button>' +
+          '<button type="button" data-encore-id="buttonTertiary">Done</button>' +
+        '</div>' +
+      '</form>' +
+    '</div>' +
+  '</div>';
+}
+
+/* THE POINT OF THIS FIXTURE: a stale popper that is STILL READABLE and sits
+ * FIRST in document order, holding a leftover search query — exactly what a real
+ * session accumulates (tippy keeps every popper it opens), and exactly what
+ * document.getElementById() would return. The live popper starts hidden and is
+ * revealed when its button is clicked.
+ *
+ * Note the stale one is deliberately NOT display:none: a hidden decoy is
+ * harmless (isVisible rejects it), so the dangerous case is one that is still on
+ * screen / measurable with a stale filtered list in it. */
+document.body.insertAdjacentHTML("beforeend", popperHTML("tippy-36", "MMXXVI"));
+document.body.insertAdjacentHTML("beforeend", popperHTML("tippy-37", ""));
+
+var btns = document.querySelectorAll('footer button[data-encore-id="buttonTertiary"]');
+var wired = {};
+function mount(id) {
+  var root = document.getElementById(id);
+  if (!root) return;
+  root.classList.remove("hidden");
+  var box = root.querySelector('input[role="searchbox"]');
+  if (!wired[id]) {
+    wired[id] = true;   // listeners are attached ONCE per popper, not per open
+    box.addEventListener("input", function () {
+      var q = box.value.toLowerCase();
+      root.querySelectorAll('button[role="menuitemcheckbox"]').forEach(function (b) {
+        var p = b.querySelector('p[data-encore-id="listRowTitle"]');
+        b.parentNode.style.display = !q || (p.textContent || "").toLowerCase().indexOf(q) !== -1 ? "" : "none";
+      });
+    });
+    root.querySelectorAll('button[role="menuitemcheckbox"]').forEach(function (b) {
+      b.addEventListener("click", function (e) {
+        e.preventDefault();
+        b.setAttribute("aria-checked", b.getAttribute("aria-checked") === "true" ? "false" : "true");
+      });
+    });
+    root.querySelectorAll("button").forEach(function (b) {
+      if (b.textContent !== "Cancel" && b.textContent !== "Done") return;
+      b.addEventListener("click", function (e) {
+        e.preventDefault();
+        if (b.textContent === "Done") {
+          root.querySelectorAll('button[role="menuitemcheckbox"]').forEach(function (x) {
+            var d = x.querySelector('[data-encore-id="listRow"]');
+            var clean = (d ? d.getAttribute("aria-labelledby") : "").replace(/^listrow-title-/, "");
+            var on = x.getAttribute("aria-checked") === "true";
+            if (clean === LIKED_URI) liked = on; else membership[clean] = on;
+          });
+        }
+        root.classList.add("hidden");
+      });
+    });
+  }
+}
+// Each button owns ONE popper: btns[0] -> tippy-36, btns[1] -> tippy-37.
+btns.forEach(function (b, i) {
+  var id = i === 0 ? "tippy-36" : "tippy-37";
+  b.addEventListener("click", function () { mount(id); });
+});
+document.querySelector('button[data-testid="add-button"]').addEventListener("click", function () {
+  liked = !liked;
+});
+
+var out = [], fails = 0;
+function ok(c, m) { if (!c) fails++; out.push((c ? "PASS  " : "FAIL  ") + m); }
+
+var sp = window.SpotMobile.spotify;
+sp.getPlaylists({ fresh: true }).then(function (list) {
+  out.push("--- read: " + (list ? list.length : 0) + " rows ---");
+  (list || []).forEach(function (p) {
+    out.push("  " + (p.containsTrack ? "[x] " : "[ ] ") + JSON.stringify(p.id) + "  " + p.name);
+  });
+  var EXPECTED = PLAYLISTS.length + 1;
+  ok(!!list && list.length === EXPECTED,
+    "reads all " + EXPECTED + " rows despite a stale popper sitting first in the DOM");
+  var names = (list || []).map(function (p) { return p.name; });
+  PLAYLISTS.forEach(function (p) {
+    ok(names.indexOf(p[1]) !== -1, "present: " + JSON.stringify(p[1]));
+  });
+  ok(sp.getPlaylistsState().viaCuration === true, "read came from the curation sheet");
+  ok(sp.getPlaylistsState().complete !== false, "sweep reported complete");
+  function byId(l, id) { return (l || []).filter(function (p) { return p.id === id; })[0]; }
+
+  // And an add must go through the live popper, verified against truth.
+  return sp.addToPlaylist({ id: "1w4tj8rQmdzeNmV7JzCbeE",
+    uri: "spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE", name: "web swinging in nyc" })
+    .then(function (res) {
+      ok(!!res && res.ok === true, "add commits with a stale popper present");
+      ok(!!membership["spotify:playlist:1w4tj8rQmdzeNmV7JzCbeE"],
+         "membership really changed (server truth updated by Done)");
+      var pre = document.getElementById("out");
+      pre.textContent = out.join("\n") + "\n\n" + (fails ? fails + " FAILED" : "ALL PASSED");
+      document.title = fails ? "FAILED" : "DONE";
+    });
+}).catch(function (e) {
+  out.push("THREW: " + ((e && e.stack) || e));
+  fails++;
+  var pre = document.getElementById("out");
+  pre.textContent = out.join("\n") + "\n\nFAILED";
+  document.title = "FAILED";
+});
+</script>
+</body>
+</html>

@@ -67,31 +67,42 @@
   h.setPlaylistMode("check");
   h.setTrack("harness", "Real Track");
 
-  /* ---------- 1a. playlist sheet close button ---------- */
+  /* ---------- 1a. sheet headers have NO close button (removed) ---------- */
+  ok(!$(".spm-pclose"), "playlist sheet has no chevron close button");
+  ok(!$(".spm-dclose"), "devices sheet has no chevron close button");
+  ok(!!$(".spm-ptitle"), "playlist sheet title still present");
+  ok(!!$(".spm-dtitle"), "devices sheet title still present");
+
+  /* ---------- 1b. playlist sheet still closes by backdrop + Escape ---------- */
   h.setLiked("harness", true);
   await sleep(300);
   tap($(".spm-like"));
   const pOpen = await waitFor(() => isOpen(".spm-psheet"), 8000, "playlist sheet open");
   ok(pOpen, "playlist sheet opens from the heart");
   if (pOpen) {
-    ok(!!$(".spm-pclose"), "playlist sheet has a top-right close button");
-    tap($(".spm-pclose"));
-    const pClosed = await waitFor(() => !isOpen(".spm-psheet"), 5000, "playlist sheet close");
-    ok(pClosed, ".spm-pclose actually closes the sheet (was inert)");
+    const backdrop = $(".spm-pbackdrop");
+    ok(!!backdrop, "playlist sheet has a backdrop to tap away from");
+    if (backdrop) {
+      backdrop.click();
+      const closed = await waitFor(() => !isOpen(".spm-psheet"), 5000, "backdrop close");
+      ok(closed, "tapping the backdrop closes the sheet");
+    }
   }
 
-  /* ---------- 1b. devices sheet close button ---------- */
+  /* ---------- 1c. devices sheet closes by backdrop ---------- */
   tap($(".spm-devices"));
   const dOpen = await waitFor(() => isOpen(".spm-dsheet"), 8000, "devices sheet open");
   ok(dOpen, "devices sheet opens");
   if (dOpen) {
-    ok(!!$(".spm-dclose"), "devices sheet has a top-right close button");
-    tap($(".spm-dclose"));
-    const dClosed = await waitFor(() => !isOpen(".spm-dsheet"), 5000, "devices sheet close");
-    ok(dClosed, ".spm-dclose actually closes the sheet (was inert)");
+    const backdrop = $(".spm-dbackdrop");
+    if (backdrop) {
+      backdrop.click();
+      const closed = await waitFor(() => !isOpen(".spm-dsheet"), 5000, "devices backdrop close");
+      ok(closed, "tapping the backdrop closes the devices sheet");
+    }
   }
 
-  /* ---------- 1c. header drag still works (guard must not break it) ---------- */
+  /* ---------- 1d. header drag still closes (guard must not break it) ---------- */
   h.setLiked("harness", true);
   await sleep(300);
   tap($(".spm-like"));
@@ -99,13 +110,104 @@
   const head = $(".spm-phead");
   const title = $(".spm-ptitle");
   const top = Math.round(head.getBoundingClientRect().top);
-  pointer(title, "pointerdown", top + 20);   // press the TITLE, not the button
+  pointer(title, "pointerdown", top + 20);   // press the TITLE, not a button
   await sleep(40);
   pointer(window, "pointermove", top + 260);
   await sleep(60);
   pointer(window, "pointerup", top + 260);
   const dragClosed = await waitFor(() => !isOpen(".spm-psheet"), 5000, "sheet close by drag");
   ok(dragClosed, "swipe-down on the header still closes the sheet");
+
+  /* ---------- 1e. no ghost click after expanding the mini player ----------
+   * Expanding on pointerup reveals the card under the finger, and the browser
+   * then synthesises its click by hit-testing the NEW layout — so a tap that
+   * landed on the mini bar can activate whatever card button now occupies that
+   * point (the Devices button, typically). The click is dispatched to that
+   * revealed element, so it has to be swallowed before it reaches any target.
+   *
+   * Geometry in the harness viewport is unreliable, so this dispatches the
+   * click straight at the control the ghost would have hit — which is exactly
+   * the contract that matters. */
+  const rootEl = document.getElementById("spm-root");
+  const expanded = await waitFor(() => !rootEl.classList.contains("spm-collapsed"),
+    6000, "player expanded");
+  ok(expanded, "player starts expanded");
+  // Collapse via the real button so the mini bar is the on-screen surface.
+  tap($(".spm-collapse"));
+  const collapsed = await waitFor(() => rootEl.classList.contains("spm-collapsed"),
+    6000, "mini player shown");
+  ok(collapsed, "player is collapsed so the mini bar is up");
+
+  if (collapsed) {
+    const miniRect = $(".spm-miniplayer").getBoundingClientRect();
+    out.push("   mini rect = " + Math.round(miniRect.left) + "," + Math.round(miniRect.top) +
+      " " + Math.round(miniRect.width) + "x" + Math.round(miniRect.height));
+    // A real tap on the mini: pointerdown/up, which expands it immediately.
+    pointer($(".spm-miniplayer"), "pointerdown", Math.round(miniRect.top + miniRect.height / 2));
+    pointer($(".spm-miniplayer"), "pointerup", Math.round(miniRect.top + miniRect.height / 2));
+    await sleep(80);
+    ok(!rootEl.classList.contains("spm-collapsed"), "the tap expanded the player");
+
+    // Now the browser's synthesized click for that same touch. Whichever card
+    // control it lands on, it must not fire.
+    const devBtn = $(".spm-devices");
+    ok(!!devBtn && devBtn.offsetParent !== null, "Devices button is revealed after expanding");
+    if (devBtn) {
+      devBtn.click();               // the ghost click, aimed at the control
+      await sleep(400);
+      ok(!isOpen(".spm-dsheet"),
+        "expanding the mini does NOT open the Devices sheet (ghost click swallowed)");
+    }
+  }
+  // Leave the player expanded for the flourish checks that follow.
+  if (rootEl.classList.contains("spm-collapsed")) tap($(".spm-collapse"));
+  await waitFor(() => !rootEl.classList.contains("spm-collapsed"), 6000, "re-expanded");
+  await sleep(300);
+
+  /* ---------- 1f. a TRAVELLING press must not open Devices ----------
+   * .spm-card is an overflow-y:auto scroller; a touch that drifts into a pan
+   * gets stolen by the browser (pointercancel + suppressed click), which is why
+   * the tap used to do nothing. touch-action:none on card buttons stops the
+   * steal, and a release that travelled is rejected so a scroll never opens the
+   * sheet by accident. */
+  const devBtn2 = $(".spm-devices");
+  ok(!!devBtn2, "Devices button exists");
+  if (devBtn2) {
+    const cs = getComputedStyle(devBtn2);
+    out.push("   devices touch-action = " + cs.touchAction);
+    ok(cs.touchAction === "none",
+      "card buttons set touch-action:none so a tap can't be stolen by the card's scroll");
+  }
+  // Drag from the button: must NOT open the sheet.
+  const dr = devBtn2 ? devBtn2.getBoundingClientRect() : null;
+  if (dr) {
+    const cx = Math.round(dr.left + dr.width / 2);
+    const cy = Math.round(dr.top + dr.height / 2);
+    const mk = (type, y, buttons) => new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true,
+      pointerId: 11, pointerType: "touch", isPrimary: true,
+      clientX: cx, clientY: y, button: 0, buttons: buttons,
+    });
+    devBtn2.dispatchEvent(mk("pointerdown", cy, 1));
+    devBtn2.dispatchEvent(mk("pointermove", cy - 60, 1));
+    devBtn2.dispatchEvent(mk("pointerup", cy - 60, 0));
+    // The synthesized click that a browser would send afterwards.
+    devBtn2.dispatchEvent(new MouseEvent("click", {
+      bubbles: true, cancelable: true, clientX: cx, clientY: cy - 60,
+    }));
+    await sleep(350);
+    ok(!isOpen(".spm-dsheet"),
+      "a press that travelled (scroll/drag) does NOT open the Devices sheet");
+    // And a clean tap still does.
+    devBtn2.click();
+    const okOpen = await waitFor(() => isOpen(".spm-dsheet"), 5000, "devices open after clean tap");
+    ok(okOpen, "a clean tap on Devices still opens the sheet");
+    if (okOpen) {
+      const back = $(".spm-dbackdrop");
+      if (back) back.click();
+      await waitFor(() => !isOpen(".spm-dsheet"), 4000, "close");
+    }
+  }
 
   /* ---------- 2. heart flourish ---------- */
   h.setLiked("harness", false);

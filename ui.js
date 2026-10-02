@@ -38,8 +38,6 @@
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
     deviceRow:
       '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
-    chevDown:
-      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>',
     check:
       '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 12.5 10 17.5 19 7"/></svg>',
     spinner:
@@ -142,13 +140,12 @@
       "</div>" +
       // --- custom Devices bottom sheet (our own layer over the player) ---
       '<div class="spm-dbackdrop" hidden></div>' +
-      '<section class="spm-dsheet" role="dialog" aria-modal="true" aria-labelledby="spm-dsheet-title" hidden>' +
+      '<section class="spm-dsheet" role="dialog" aria-modal="true" aria-labelledby="spm-dsheet-title" tabindex="-1" hidden>' +
       '<div class="spm-dgrab"><span class="spm-dhandle" aria-hidden="true"></span></div>' +
+      // No close button: the sheet closes by swipe-down, backdrop tap, or
+      // Escape. The header is title-only, so it centres.
       '<header class="spm-dhead">' +
       '<h3 class="spm-dtitle" id="spm-dsheet-title">Devices</h3>' +
-      '<button class="spm-circle spm-dclose" type="button" aria-label="Close devices">' +
-      SVG.chevDown +
-      "</button>" +
       "</header>" +
       '<div class="spm-dbody">' +
       '<ul class="spm-dlist"></ul>' +
@@ -158,13 +155,12 @@
       "</section>" +
       // --- custom Save / Add-to-Playlist bottom sheet (same pattern as Devices) ---
       '<div class="spm-pbackdrop" hidden></div>' +
-      '<section class="spm-psheet" role="dialog" aria-modal="true" aria-labelledby="spm-psheet-title" hidden>' +
+      '<section class="spm-psheet" role="dialog" aria-modal="true" aria-labelledby="spm-psheet-title" tabindex="-1" hidden>' +
       '<div class="spm-pgrab"><span class="spm-phandle" aria-hidden="true"></span></div>' +
+      // No close button: the sheet closes by swipe-down, backdrop tap, or
+      // Escape. The header is title-only, so it centres.
       '<header class="spm-phead">' +
       '<h3 class="spm-ptitle" id="spm-psheet-title">Add to playlist</h3>' +
-      '<button class="spm-circle spm-pclose" type="button" aria-label="Close playlist picker">' +
-      SVG.chevDown +
-      "</button>" +
       "</header>" +
       '<div class="spm-psearch" role="search">' +
       '<span class="spm-psearch-icon" aria-hidden="true">' + SVG.search + "</span>" +
@@ -244,7 +240,6 @@
     var sheetEl = q(".spm-dsheet");
     var backdropEl = q(".spm-dbackdrop");
     var grabEl = q(".spm-dgrab");
-    var sheetClose = q(".spm-dclose");
     var sheetList = q(".spm-dlist");
     var sheetState = q(".spm-dstate");
     var sheetHead = q(".spm-dhead");
@@ -254,7 +249,6 @@
     var psheetEl = q(".spm-psheet");
     var pbackdropEl = q(".spm-pbackdrop");
     var pgrabEl = q(".spm-pgrab");
-    var psheetClose = q(".spm-pclose");
     var psheetListEl = q(".spm-plist");
     var psheetState = q(".spm-pstate");
     var psheetHead = q(".spm-phead");
@@ -398,16 +392,49 @@
       }
     }
 
+    // Ghost-click guard. Expanding on pointerup reveals .spm-card UNDER the finger,
+    // and the browser then synthesises its click by hit-testing the NEW layout —
+    // so a tap that landed on the mini bar can activate whatever card button
+    // happens to sit at that point now (the Devices button, typically). The
+    // click is dispatched to the newly revealed element, so neither the mini's
+    // own guards nor a `stopPropagation` inside the mini can help: it has to be
+    // swallowed before it reaches any target.
+    var miniExpandAt = 0;
+    var GHOST_CLICK_WINDOW_MS = 450;
+    document.addEventListener(
+      "click",
+      function (e) {
+        if (!miniExpandAt) return;
+        var dt = nowMs() - miniExpandAt;
+        // Consume the flag either way: only the very next click can be the
+        // ghost, and a stale flag must never eat a deliberate tap.
+        miniExpandAt = 0;
+        if (dt > GHOST_CLICK_WINDOW_MS) return;
+        // Never swallow a click that is genuinely inside the mini bar.
+        try {
+          if (e.target && e.target.closest && e.target.closest(".spm-miniplayer")) return;
+        } catch (err) {}
+        e.stopPropagation();
+        e.preventDefault();
+      },
+      true
+    );
+
     // Animated state flips (mini <-> full feel like one component
     // transforming, not two boxes swapping). Reduced-motion users and
     // first paint get the instant swap instead.
-    function expandAnimated() {
+    function expandAnimated(fromPointer) {
       if (!collapsed) return;
       clearTransitionTimer();
       mini.classList.remove("spm-leaving");
       cardEl.classList.remove("spm-leaving-card");
       cardEl.style.transform = "";
       cardEl.style.opacity = "";
+      // Arm the ghost-click guard ONLY for the pointer path. When we expand
+      // from the click fallback (the click is already being dispatched, and
+      // our capture listener has already run for it) arming here would eat
+      // the user's NEXT deliberate tap.
+      miniExpandAt = fromPointer ? nowMs() : 0;
       setCollapsed(false);
     }
 
@@ -1615,7 +1642,7 @@
       // delay or swallow — the old "sometimes two taps"). The click
       // handler stays as a fallback; it early-returns once expanded.
       if (!m.locked) {
-        expandAnimated();
+        expandAnimated(true);
         return;
       }
       var dt = Math.max(1, nowMs() - m.t0);
@@ -1623,7 +1650,7 @@
         var vel = -m.dy / dt; // upward velocity, px per ms
         if (m.dy < -90 || (m.dy < -45 && vel > 0.45)) {
           miniSuppressClick = true; // a swipe release may still fire click
-          expandAnimated();
+          expandAnimated(true);
         }
         // Otherwise the cleared transform glides home via CSS transition.
       } else {
@@ -1635,7 +1662,7 @@
         var hadx = Math.abs(m.dx);
         if (e && e.pointerType === "touch" && dt < 150 && hadx < 110) {
           miniSuppressClick = false;
-          expandAnimated();
+          expandAnimated(true);
         } else {
           miniSuppressClick = true;
         }
@@ -2058,7 +2085,7 @@
 
     function finishSheetOpen() {
       try {
-        sheetClose.focus({ preventScroll: true });
+        sheetEl.focus({ preventScroll: true });
       } catch (e) {}
     }
 
@@ -2262,15 +2289,42 @@
     // random while holding it worked. The click listener stays for
     // keyboard/assistive input; `openSheet()` is idempotent, so a tap that
     // delivers both never double-toggles.
+    //
+    // A release that TRAVELLED is not a tap — it is the card scrolling or a
+    // drag — so it must not open the sheet. Touch is implicitly captured to the
+    // original target, so pointerup fires here even when the finger has moved
+    // off the button entirely.
+    var devicesPress = null;
+    var devicesRejectClick = false;
+    devicesBtn.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      devicesPress = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      devicesRejectClick = false;
+    });
     devicesBtn.addEventListener("pointerup", function (e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
+      var p = devicesPress;
+      devicesPress = null;
+      if (p && p.id === e.pointerId) {
+        if (Math.abs(e.clientX - p.x) > 12 || Math.abs(e.clientY - p.y) > 12) {
+          // Travelled: a scroll or drag, not a tap. The synthesized click must
+          // not undo that decision, so flag it.
+          devicesRejectClick = true;
+          return;
+        }
+      }
       openSheet();
+    });
+    devicesBtn.addEventListener("pointercancel", function () {
+      devicesPress = null;
+      devicesRejectClick = true;
     });
     devicesBtn.addEventListener("click", function () {
+      if (devicesRejectClick) {
+        devicesRejectClick = false;
+        return;
+      }
       openSheet();
-    });
-    sheetClose.addEventListener("click", function () {
-      closeSheet();
     });
     backdropEl.addEventListener("click", function () {
       closeSheet();
@@ -2343,8 +2397,13 @@
     var psheetSaving = false;
 
     function ptrackKeyOf(snap) {
+      // Membership is per-TRACK, so the key is the track alone. Including the artist
+      // made a late-loading artist line look like a track change: Spotify
+      // frequently renders the title before the artist, and each such arrival
+      // blanked the open sheet to "Loading…" and threw the user's staged draft
+      // away. On a phone that happens often enough to read as random.
       if (!snap) return "";
-      return (snap.track || "") + " | " + (snap.artist || "");
+      return String(snap.track == null ? "" : snap.track).trim();
     }
 
     function pkeyOf(p) {
@@ -2616,21 +2675,38 @@
       return out;
     }
 
-    // Cached paint instantly, then ONE fresh read (hidden menus, deferred
-    // until the slide lands so the open never stutters — same as Devices).
+    // Returns the cached list ONLY when it is trustworthy enough to paint before
+    // the fresh read lands: it must come from Spotify's own sheet (never the
+    // Your Library fallback) and the sweep must have seen every row. A cache
+    // from the wrong source is exactly what produced "two different lists,
+    // randomly": we would paint it instantly and then visibly flip to the real
+    // one a beat later.
+    function trustworthyCachedPlaylists() {
+      var out = [];
+      try {
+        var st = spotify.getPlaylistsState ? spotify.getPlaylistsState() : null;
+        if (!st || !st.viaCuration || st.complete === false) return out;
+        out = (st.list || []).slice();
+      } catch (e) {
+        out = [];
+      }
+      return out;
+    }
+
+    // Paint what we already know (only if trustworthy), then ALWAYS follow with
+    // one FRESH read. The read used to be `getPlaylists()`, which happily
+    // returned the very cache we had just painted — so whichever source won last
+    // stayed on screen for its whole TTL and a single failed read pinned the
+    // wrong list for seconds. Always re-read, and let the cache be a paint-only
+    // optimisation.
     function loadPSheetPlaylists(force) {
       if (psheetLoadTimer) {
         window.clearTimeout(psheetLoadTimer);
         psheetLoadTimer = 0;
       }
       psheetLastLoad = nowMs();
-      var cached = [];
-      try {
-        cached = spotify.getCachedPlaylists ? spotify.getCachedPlaylists() : [];
-      } catch (e) {
-        cached = [];
-      }
-      if (cached && cached.length && !force) {
+      var cached = trustworthyCachedPlaylists();
+      if (cached.length && !force) {
         applyPsheetList(cached);
       } else if (psheetStatus !== "loading" || force) {
         if (!cached.length) {
@@ -2640,7 +2716,10 @@
       }
       var promise = null;
       try {
-        promise = force && spotify.refreshPlaylists ? spotify.refreshPlaylists() : spotify.getPlaylists();
+        // ALWAYS fresh. Caching here is a paint optimisation only; letting the
+        // read hit the cache too is what made the previous read's source stick
+        // for a whole TTL.
+        promise = spotify.refreshPlaylists ? spotify.refreshPlaylists() : spotify.getPlaylists();
       } catch (e) {
         promise = null;
       }
@@ -2748,13 +2827,31 @@
     function syncPsheetWithSnap(snap) {
       if (!psheetOpen || !snap) return;
       var key = ptrackKeyOf(snap);
+      var hasTrack = !!String(snap.track == null ? "" : snap.track).trim();
+      // A snapshot with no track/artist is a transient glitch — Spotify
+      // mid-re-render of its own player bar — NOT a track change. Reacting to
+      // one wiped the list back to "Loading…" and threw the user's staged
+      // draft away, and it fires often enough on a phone to read as random.
+      if (!hasTrack) return;
+      // Adopt the first real key silently (we may have opened before the first
+      // snapshot landed), so the next identical one is not a "change".
+      if (!psheetTrackKey) {
+        psheetTrackKey = key;
+        return;
+      }
       // Track changed under the open sheet: never show Track A's membership
       // for Track B — reload fresh for the new track (draft is discarded,
       // keeps the search text).
       if (key !== psheetTrackKey) {
         psheetTrackKey = key;
-        psheetStatus = "loading";
-        renderPSheet();
+        psheetDraft = {};
+        psheetDirty = false;
+        // Keep the rows on screen rather than blanking to a spinner: only the
+        // membership values are stale, and an empty flash reads as breakage.
+        if (!psheetList.length) {
+          psheetStatus = "loading";
+          renderPSheet();
+        }
         loadPSheetPlaylists(true);
         return;
       }
@@ -2806,18 +2903,40 @@
         if (psheetSearchInput) psheetSearchInput.value = "";
       } catch (e) {}
       try {
-        psheetTrackKey = lastSnap ? ptrackKeyOf(lastSnap) : "";
+        // Seed from the LIVE snapshot, not `lastSnap`: the last render lags the
+        // real track (snapshots are mutation- or 2s-cadence driven), so seeding
+        // from it made the very next snapshot look like a track change, which
+        // blanked the sheet and discarded the draft. getSnapshot() reads
+        // Spotify's DOM directly, so it is always current.
+        var seed = null;
+        try {
+          if (spotify && spotify.getSnapshot) seed = spotify.getSnapshot();
+        } catch (e1) {}
+        if (!seed) seed = lastSnap;
+        psheetTrackKey = seed ? ptrackKeyOf(seed) : "";
       } catch (e) {
         psheetTrackKey = "";
       }
       setPSheetNotice("");
-      renderPSheet();
+      // Paint whatever we already know SYNCHRONOUSLY, before the slide even
+      // starts, but ONLY if it is trustworthy (see
+      // trustworthyCachedPlaylists). Showing a stale or wrong-source list here
+      // and then visibly flipping to the real one is what read as "two
+      // different lists, randomly".
+      var cachedNow = trustworthyCachedPlaylists();
+      if (cachedNow.length) {
+        applyPsheetList(cachedNow);
+      } else {
+        renderPSheet();
+      }
       psheetLastLoad = nowMs();
       if (psheetLoadTimer) window.clearTimeout(psheetLoadTimer);
+      // Short deferral only: the sheet already has content, so there is no
+      // slide to stutter while the truth catches up.
       psheetLoadTimer = window.setTimeout(function () {
         psheetLoadTimer = 0;
         if (psheetOpen) loadPSheetPlaylists(false);
-      }, 260);
+      }, 140);
       try {
         abortGesture();
       } catch (e) {}
@@ -2825,7 +2944,7 @@
 
     function finishPSheetOpen() {
       try {
-        psheetClose.focus({ preventScroll: true });
+        psheetEl.focus({ preventScroll: true });
       } catch (e) {}
     }
 
@@ -2896,8 +3015,7 @@
       if (!psheetOpen || psheetDrag) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       // Never hijack a press that started on a control. preventDefault() below
-      // suppresses the compatibility mouse events — including the `click` — so
-      // dragging from the header left .spm-pclose completely inert.
+      // suppresses the compatibility mouse events — including the `click`.
       var tgt = e.target;
       if (tgt && tgt.closest && tgt.closest("button, a, input, select, textarea")) return;
       psheetDrag = {
@@ -2947,9 +3065,6 @@
 
     // The sheet opens from the hearts (see heartTap), never from a
     // dedicated button: unsaved hearts Like, saved hearts open the sheet.
-    psheetClose.addEventListener("click", function () {
-      closePSheet();
-    });
     // Spotify parity: Cancel discards the draft, Done commits it.
     if (psheetCancelBtn) {
       psheetCancelBtn.addEventListener("click", function () {
