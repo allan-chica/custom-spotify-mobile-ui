@@ -141,7 +141,9 @@
   border-radius: 12px;
 }
 
-/* Thin circular outline buttons (header), like the concept. */
+/* Icon-only header buttons (back + heart): no circular outline — just the
+ * glyph, matching the ghost/queue/devices rows. The 44px box stays as the
+ * touch target; only the ring is gone. */
 #spm-root .spm-circle {
   display: inline-flex;
   align-items: center;
@@ -149,14 +151,15 @@
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1px solid var(--spm-line);
+  border: none;
+  background: none;
   color: var(--spm-muted);
-  transition: color 0.18s, border-color 0.18s, background 0.18s, transform 0.12s;
+  transition: color 0.18s, background 0.18s, transform 0.12s;
 }
 
 #spm-root .spm-circle:hover {
   color: var(--spm-cream);
-  border-color: var(--spm-line-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 #spm-root .spm-circle:active {
@@ -165,7 +168,6 @@
 
 #spm-root .spm-circle.spm-liked {
   color: var(--spm-cream);
-  border-color: rgba(244, 241, 234, 0.45);
 }
 
 /* ---------- Liked flourish: bloom + shards ----------
@@ -810,10 +812,6 @@
   }
 }
 
-#spm-root .spm-play:hover {
-  box-shadow: 0 14px 34px rgba(244, 241, 234, 0.16), 0 12px 30px rgba(0, 0, 0, 0.5);
-}
-
 #spm-root .spm-play:active {
   transform: scale(0.93);
 }
@@ -956,34 +954,6 @@
   background: var(--spm-solid);
   transform-origin: left center;
   transform: scaleX(1);
-}
-
-#spm-root .spm-vol-knob {
-  position: absolute;
-  top: 50%;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--spm-solid);
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
-  transform: translate(-50%, -50%) scale(0.6);
-  opacity: 0;
-  transition: opacity 0.18s, transform 0.18s;
-  pointer-events: none;
-}
-
-#spm-root .spm-vol-bar:hover .spm-vol-knob,
-#spm-root .spm-vol-bar:active .spm-vol-knob,
-#spm-root .spm-vol-bar:focus-visible .spm-vol-knob {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-@media (hover: none) {
-  #spm-root .spm-vol-bar .spm-vol-knob {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(0.85);
-  }
 }
 
 #spm-root .spm-status {
@@ -1510,10 +1480,6 @@
     box-shadow: 0 12px 30px rgba(30, 25, 15, 0.4);
   }
 
-  #spm-root .spm-play:hover {
-    box-shadow: 0 14px 34px rgba(30, 25, 15, 0.22), 0 12px 30px rgba(30, 25, 15, 0.4);
-  }
-
   #spm-root .spm-vol-track {
     background: rgba(23, 23, 21, 0.18);
   }
@@ -1775,6 +1741,7 @@
 #spm-root .spm-dspin svg {
   display: block;
   animation: spm-dspin 0.9s linear infinite;
+  will-change: transform;
 }
 
 @keyframes spm-dspin {
@@ -2139,6 +2106,7 @@
 #spm-root .spm-ppending .spm-ptail svg,
 #spm-root .spm-pspin svg {
   animation: spm-pspin 0.9s linear infinite;
+  will-change: transform;
 }
 
 @keyframes spm-pspin {
@@ -2247,6 +2215,7 @@
 
 #spm-root .spm-pdone svg {
   animation: spm-pspin 0.9s linear infinite;
+  will-change: transform;
 }
 
 #spm-root .spm-pcancel:disabled {

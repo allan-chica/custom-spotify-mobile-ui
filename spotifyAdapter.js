@@ -1118,11 +1118,33 @@
     return 0;
   }
 
+  // Last confident play-state. The toggle button can vanish for a frame while
+  // React re-renders around it (e.g. right after a Like/menu open), and a
+  // single missing/unreadable read must not flap halos, ticker and icons off
+  // and back on — the reported "blobs start when I press the heart".
+  var lastPlaying = false;
+  var lastPlayingSet = false;
   function isPlaying() {
-    var btn = findToggleButton();
-    if (!btn) return false;
-    var label = norm(btn.getAttribute("aria-label"));
-    if (/paus/.test(label)) return true; // Pause/Pausa/Pausar/... => currently playing
+    var btn = null;
+    try {
+      btn = findToggleButton();
+    } catch (e) {
+      btn = null;
+    }
+    // Transient DOM gap (player re-rendering around an unrelated action):
+    // hold the last confident value instead of inventing a pause.
+    if (!btn) return lastPlayingSet ? lastPlaying : false;
+    var label = "";
+    try {
+      label = norm(btn.getAttribute("aria-label"));
+    } catch (e) {
+      label = "";
+    }
+    if (/paus/.test(label)) {
+      lastPlaying = true;
+      lastPlayingSet = true;
+      return true; // Pause/Pausa/Pausar/... => currently playing
+    }
     if (
       label === "play" ||
       label.indexOf("play") !== -1 ||
@@ -1132,12 +1154,173 @@
       label.indexOf("abspielen") !== -1 ||
       label.indexOf("wiedergabe") !== -1
     ) {
+      lastPlaying = false;
+      lastPlayingSet = true;
       return false;
     }
-    // Unknown locale: fall back to document.title convention
-    // ("Artist • Title" usually means something is loaded, not playing) — so
-    // default to false rather than inventing state.
-    return false;
+    // Unknown label/locale (or empty during a swap): do not invent a flip —
+    // hold the last confident value; unknown-before-ever-known stays paused.
+    return lastPlayingSet ? lastPlaying : false;
+  }
+
+  /* ---------- Direct play-state mirror ----------
+   *
+   * The snapshot pipeline (MutationObserver -> 150ms debounce -> full
+   * getSnapshot -> render) is the wrong channel for the play/pause icon: it
+   * lags the real flip, and every intermediate snapshot (optimistic paint,
+   * stale paused read, confirmed playing) becomes a visible flap —
+   * play -> pause -> play in quick succession. The icon must mirror
+   * Spotify's OWN toggle button instead: one dedicated observer watches just
+   * that button's aria-label and reports flips immediately, with none of the
+   * invented middle states (optimistic guesses, sticky holds, debounce merges).
+   * A flip is only ever delivered when the live button actually flipped.
+   *
+   * - readToggleState(): 'playing' | 'paused' | 'unknown'. Unknown means the
+   *   button is missing/unreadable right now — callers must HOLD, never guess.
+   * - getPlayState(): true | false | null (null = unknown).
+   * - watchPlayState(cb): cb(true/false) on every real flip, instantly.
+   *   React replaces the button node across renders, so the watched reference
+   *   is re-resolved whenever the subtree changes. Returns an unwatch fn.
+   */
+  function readToggleState() {
+    var btn = null;
+    try {
+      btn = findToggleButton();
+    } catch (e) {
+      btn = null;
+    }
+    if (!btn) return "unknown";
+    var label = "";
+    try {
+      label = norm(btn.getAttribute("aria-label"));
+    } catch (e) {
+      label = "";
+    }
+    if (/paus/.test(label)) return "playing";
+    if (
+      label === "play" ||
+      label.indexOf("play") !== -1 ||
+      label.indexOf("reproduc") !== -1 ||
+      label.indexOf("reproduz") !== -1 ||
+      label.indexOf("lecture") !== -1 ||
+      label.indexOf("abspielen") !== -1 ||
+      label.indexOf("wiedergabe") !== -1
+    ) {
+      return "paused";
+    }
+    return "unknown";
+  }
+
+  function getPlayState() {
+    var s = null;
+    try {
+      s = readToggleState();
+    } catch (e) {
+      s = "unknown";
+    }
+    return s === "playing" ? true : s === "paused" ? false : null;
+  }
+
+  var playSubs = [];
+  var playObserver = null;
+  var playObserverStarted = false;
+  var watchedToggleBtn = null;
+  var lastDeliveredPlay = null; // true | false | null (nothing delivered yet)
+
+  function deliverPlayState() {
+    var s = null;
+    try {
+      s = getPlayState();
+    } catch (e) {
+      s = null;
+    }
+    // Unknown (button mid-swap): hold the last delivered state. Delivering
+    // anything here would invent exactly the flap this watcher exists to kill.
+    if (s === null) return;
+    try {
+      watchedToggleBtn = findToggleButton();
+    } catch (e2) {}
+    if (lastDeliveredPlay !== null && s === lastDeliveredPlay) return;
+    lastDeliveredPlay = s;
+    for (var i = 0; i < playSubs.length; i++) {
+      try {
+        playSubs[i](s);
+      } catch (e3) {
+        reportSubscriberError(e3);
+      }
+    }
+  }
+
+  function playBatch(mutations) {
+    var maybeFlip = false;
+    var structureChanged = false;
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (
+        m.type === "attributes" &&
+        m.attributeName === "aria-label" &&
+        m.target === watchedToggleBtn
+      ) {
+        maybeFlip = true;
+        break;
+      }
+      if (m.type === "childList") structureChanged = true;
+    }
+    // Node replacement: re-resolve only when the watched node is actually
+    // gone (identity + containment checks are cheap; findToggleButton is not
+    // run on every batch).
+    if (structureChanged && (!watchedToggleBtn || !document.contains(watchedToggleBtn))) {
+      try {
+        watchedToggleBtn = findToggleButton();
+      } catch (e) {
+        watchedToggleBtn = null;
+      }
+    }
+    if (maybeFlip || structureChanged) deliverPlayState();
+  }
+
+  function startPlayObserver() {
+    if (playObserverStarted) return;
+    playObserverStarted = true;
+    try {
+      watchedToggleBtn = findToggleButton();
+    } catch (e) {
+      watchedToggleBtn = null;
+    }
+    try {
+      var s0 = getPlayState();
+      if (s0 !== null) lastDeliveredPlay = s0;
+    } catch (e2) {}
+    try {
+      playObserver = new MutationObserver(playBatch);
+      playObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["aria-label"],
+        childList: true,
+        subtree: true,
+      });
+    } catch (e3) {
+      playObserver = null;
+    }
+  }
+
+  function watchPlayState(cb) {
+    if (typeof cb !== "function") return function () {};
+    startPlayObserver();
+    // Resolve now too: the button may already exist (or appear between our
+    // resolve and the observer's first batch), so seed delivery is instant.
+    try {
+      watchedToggleBtn = findToggleButton();
+    } catch (e) {}
+    playSubs.push(cb);
+    // No synchronous seed delivery: the UI seeds via getPlayState() and the
+    // observer delivers every later flip. (Delivering here as well would just
+    // repaint the same state twice.)
+    return function () {
+      for (var i = playSubs.length - 1; i >= 0; i--) {
+        if (playSubs[i] === cb) playSubs.splice(i, 1);
+      }
+    };
   }
 
   function isShuffleEnabled() {
@@ -5527,48 +5710,50 @@
       };
     },
 
-    // Transport
+    // Transport (full taps, not bare clicks: on Android/desktop-site a bare
+    // synthetic click can be ignored, which read as "needs a harder tap").
+    // userClick ends with el.click() anyway, so desktop behaviour is unchanged.
     play: function () {
       if (isPlaying()) return true;
-      return click(findToggleButton());
+      return userClick(findToggleButton());
     },
     pause: function () {
       if (!isPlaying()) return true;
-      return click(findToggleButton());
+      return userClick(findToggleButton());
     },
     togglePlay: function () {
-      return click(findToggleButton());
+      return userClick(findToggleButton());
     },
     next: function () {
-      return click(findPlayerButton("next"));
+      return userClick(findPlayerButton("next"));
     },
     previous: function () {
-      return click(findPlayerButton("previous"));
+      return userClick(findPlayerButton("previous"));
     },
 
     // Modes
     toggleShuffle: function () {
-      return click(findPlayerButton("shuffle"));
+      return userClick(findPlayerButton("shuffle"));
     },
     toggleRepeat: function () {
-      return click(findPlayerButton("repeat"));
+      return userClick(findPlayerButton("repeat"));
     },
     toggleLike: function () {
-      return click(findLikeButton());
+      return userClick(findLikeButton());
     },
 
     // Side panel shortcuts. Return false when Spotify has no such control
     // (e.g. logged out) so the UI can hide/disable the button.
     openLyrics: function () {
-      return click(findSideButton("lyrics"));
+      return userClick(findSideButton("lyrics"));
     },
     openQueue: function () {
-      return click(findSideButton("queue"));
+      return userClick(findSideButton("queue"));
     },
     // Spotify's own picker. Kept for compatibility/diagnostics — the custom
     // sheet uses the device API below, which drives the same picker for real.
     openDevices: function () {
-      return click(findSideButton("device"));
+      return userClick(findSideButton("device"));
     },
     closeDevices: function () {
       return closeNativePicker();
@@ -5752,6 +5937,10 @@
     getCurrentTime: getCurrentTime,
     getDuration: getDuration,
     isPlaying: isPlaying,
+    // Direct toggle-button mirror (instant, no snapshot debounce). The play
+    // icons + halos prefer this; snapshots keep driving progress/status.
+    getPlayState: getPlayState,
+    watchPlayState: watchPlayState,
     isShuffleEnabled: isShuffleEnabled,
     getRepeatMode: getRepeatMode,
     isLiked: isLiked,

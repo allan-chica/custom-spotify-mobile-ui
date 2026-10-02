@@ -107,10 +107,6 @@
       '<button class="spm-mini spm-next" type="button" aria-label="Next">' + SVG.next + "</button>" +
       '<button class="spm-mini spm-shuffle" type="button" aria-label="Enable shuffle" aria-pressed="false">' + SVG.shuffle + "</button>" +
       "</div>" +
-      '<div class="spm-lyrics">' +
-      "<span>Lyrics</span>" +
-      '<button class="spm-expand spm-lyrics-open" type="button" aria-label="Open lyrics in Spotify">' + SVG.expand + "</button>" +
-      "</div>" +
       '<div class="spm-aux">' +
       '<button class="spm-ghost spm-queue" type="button" aria-label="Queue">' + SVG.queue + "<span>Queue</span></button>" +
       '<button class="spm-ghost spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
@@ -118,9 +114,12 @@
       '<button class="spm-voltbtn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
       '<div class="spm-vol-bar" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">' +
       '<div class="spm-vol-track"><div class="spm-vol-fill"></div></div>' +
-      '<div class="spm-vol-knob"></div>' +
       "</div>" +
       "</div>" +
+      "</div>" +
+      '<div class="spm-lyrics">' +
+      "<span>Lyrics</span>" +
+      '<button class="spm-expand spm-lyrics-open" type="button" aria-label="Open lyrics in Spotify">' + SVG.expand + "</button>" +
       "</div>" +
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
@@ -230,7 +229,6 @@
     var muteBtn = q(".spm-mute");
     var volBar = q(".spm-vol-bar");
     var volFill = q(".spm-vol-fill");
-    var volKnob = q(".spm-vol-knob");
     var collapseBtn = q(".spm-collapse");
     var contextEl = q(".spm-context");
     var contextLink = q(".spm-context-link");
@@ -393,32 +391,77 @@
     }
 
     // Ghost-click guard. Expanding on pointerup reveals .spm-card UNDER the finger,
-    // and the browser then synthesises its click by hit-testing the NEW layout —
-    // so a tap that landed on the mini bar can activate whatever card button
-    // happens to sit at that point now (the Devices button, typically). The
-    // click is dispatched to the newly revealed element, so neither the mini's
-    // own guards nor a `stopPropagation` inside the mini can help: it has to be
+    // and opening a sheet reveals its backdrop UNDER the finger — and the
+    // browser then synthesises its click by hit-testing the NEW layout.
+    // So a tap that landed on the mini bar can activate whatever card button
+    // happens to sit at that point now (the Devices button, typically), and a
+    // tap that opened a sheet on pointerup can immediately close it again via
+    // its own backdrop (the "loading then closes on its own" flash). The click
+    // is dispatched to the newly revealed element, so neither the mini's own
+    // guards nor a `stopPropagation` inside the mini can help: it has to be
     // swallowed before it reaches any target.
     var miniExpandAt = 0;
+    var sheetOpenedAt = 0;
     var GHOST_CLICK_WINDOW_MS = 450;
     document.addEventListener(
       "click",
       function (e) {
-        if (!miniExpandAt) return;
-        var dt = nowMs() - miniExpandAt;
-        // Consume the flag either way: only the very next click can be the
-        // ghost, and a stale flag must never eat a deliberate tap.
-        miniExpandAt = 0;
-        if (dt > GHOST_CLICK_WINDOW_MS) return;
-        // Never swallow a click that is genuinely inside the mini bar.
-        try {
-          if (e.target && e.target.closest && e.target.closest(".spm-miniplayer")) return;
-        } catch (err) {}
-        e.stopPropagation();
-        e.preventDefault();
+        // Mini-expand ghost: swallow the trailing click unless it is genuinely
+        // inside the mini bar. Consumed either way so a stale flag never eats
+        // a deliberate later tap.
+        if (miniExpandAt) {
+          var dt = nowMs() - miniExpandAt;
+          miniExpandAt = 0;
+          if (dt <= GHOST_CLICK_WINDOW_MS) {
+            try {
+              if (e.target && e.target.closest && e.target.closest(".spm-miniplayer")) return;
+            } catch (err) {}
+            e.stopPropagation();
+            e.preventDefault();
+            return;
+          }
+        }
+        // Sheet-open ghost: the opening tap's trailing click lands on the
+        // just-revealed backdrop (or another card control under the overlay).
+        // Swallow the first click after open so the sheet does not instantly
+        // toggle/close itself. Clicks genuinely inside the open sheet are
+        // allowed through (rows cannot be under the finger this fast anyway —
+        // they render later). Consumed either way like the mini guard, so a
+        // stale flag never eats a deliberate later tap (e.g. backdrop-close
+        // in tests fires within the same window and must go through once the
+        // ghost is gone).
+        if (sheetOpenedAt) {
+          var sdt = nowMs() - sheetOpenedAt;
+          sheetOpenedAt = 0;
+          if (sdt <= GHOST_CLICK_WINDOW_MS) {
+            var inSheet = false;
+            try {
+              if (e.target && e.target.closest) {
+                inSheet = !!(
+                  e.target.closest(".spm-dsheet") ||
+                  e.target.closest(".spm-psheet")
+                );
+              }
+            } catch (err2) {}
+            if (!inSheet) {
+              e.stopPropagation();
+              e.preventDefault();
+            }
+            return;
+          }
+        }
       },
       true
     );
+
+    function armSheetGhost() {
+      sheetOpenedAt = nowMs();
+      // Expire by time so one tap's several trailing clicks are all covered
+      // but a deliberate later tap is never eaten.
+      window.setTimeout(function () {
+        sheetOpenedAt = 0;
+      }, GHOST_CLICK_WINDOW_MS + 50);
+    }
 
     // Animated state flips (mini <-> full feel like one component
     // transforming, not two boxes swapping). Reduced-motion users and
@@ -498,6 +541,73 @@
       setTimeout(function () {
         btn.classList.remove("spm-press");
       }, 140);
+    }
+
+    // --- transport wiring (adapter only) ---
+    bindTap(playBtn, sendTogglePlay);
+
+    /* ---------- Unified tap handling ----------
+     * `click` alone feels dead on touch: it arrives ~300ms late and is
+     * swallowed entirely when the touch drifts into a scroll/pan (the card is
+     * a scroller, and card buttons deliberately set touch-action:none).
+     * Devices already solved this with a press-release fast path; hearts and
+     * transport had no equivalent, which is why they needed "a harder second
+     * tap". Every tap target below now shares one contract:
+     *   pointerdown -> instant pressFeedback (finger sees it at once),
+     *   pointerup   -> act immediately when the press did not travel,
+     *   click       -> keyboard/assistive fallback only (ignored when the
+     *                  pointerup path already handled this tap).
+     * Travel is measured per-press (>12px = scroll/drag, not a tap), mirroring
+     * the Devices guard so pans never fire actions.
+     */
+    var TAP_TRAVEL_PX = 12;
+    var TAP_DEDUP_MS = 700;
+
+    function tapState() {
+      return { x: 0, y: 0, id: null, handledAt: 0 };
+    }
+
+    function tapDown(st, e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return false;
+      st.id = e.pointerId;
+      st.x = e.clientX;
+      st.y = e.clientY;
+      return true;
+    }
+
+    function tapUp(st, e) {
+      if (st.id === null || (e && e.pointerId !== undefined && e.pointerId !== st.id)) return "ignore";
+      st.id = null;
+      if (e.pointerType === "mouse" && e.button !== 0) return "ignore";
+      if (Math.abs(e.clientX - st.x) > TAP_TRAVEL_PX || Math.abs(e.clientY - st.y) > TAP_TRAVEL_PX) {
+        return "travelled";
+      }
+      st.handledAt = nowMs();
+      return "tap";
+    }
+
+    function tapClick(st, e) {
+      // Real keyboard/assistive clicks carry no pointer data at all (detail 0
+      // AND zero coordinates) — those must always run. Anything with
+      // coordinates that arrives right after our own pointerup handling is the
+      // same tap twice (including synthetic test taps, which set coordinates
+      // but leave detail 0) — swallow it.
+      var d = 0;
+      var cx = 0;
+      var cy = 0;
+      try {
+        d = e.detail || 0;
+        cx = e.clientX || 0;
+        cy = e.clientY || 0;
+      } catch (err) {}
+      if (d === 0 && cx === 0 && cy === 0) return "tap";
+      if (nowMs() - st.handledAt < TAP_DEDUP_MS) return "ignore";
+      st.handledAt = nowMs();
+      return "tap";
+    }
+
+    function tapCancel(st) {
+      st.id = null;
     }
 
     /* ---------- Liked flourish ----------
@@ -589,44 +699,91 @@
       }, 1150);
     }
 
-    // Optimistic play/pause flip: paint the opposite icon the moment the
-    // finger lands instead of waiting for the Spotify-DOM round trip
-    // (click -> React -> mutation -> snapshot -> render), which is what
-    // feels laggy on phone CPUs. The next snapshot reconciles via render's
-    // churn guard, so a failed click self-corrects within a beat.
-    // Double-taps keep parity (two flips), so they stay correct too.
-    function optimisticPlayFlip() {
+    // Play / pause is a straight mirror of Spotify's OWN toggle button — no
+    // optimistic flips, no spinners, no invented middle states. A tap only
+    // sends the command; the icon changes when Spotify's button actually
+    // flips (reported instantly by the adapter's watchPlayState, with the
+    // debounced snapshot as fallback/seed). That is what keeps it truthful:
+    // every painted state was read off the real button.
+    // Direct play-state mirror: true | false | null (unknown / not yet read).
+    var directPlaying = null;
+    var unwatchPlayState = null;
+
+    function paintPlayIcon(playing) {
+      playBtn.innerHTML = playing ? SVG.pause : SVG.play;
+      playBtn.setAttribute("data-state", playing ? "pause" : "play");
+      playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+      miniPlay.innerHTML = playing ? SVG.pause : SVG.play;
+      miniPlay.setAttribute("data-state", playing ? "pause" : "play");
+      miniPlay.setAttribute("aria-label", playing ? "Pause" : "Play");
+      root.classList.toggle("spm-playing", !!playing);
+    }
+
+    // Single painter for icons + halos from a resolved play-state. Called by
+    // snapshots (fallback/seed) AND the direct button watcher (instant) —
+    // one code path means the two sources can never disagree into a flap.
+    // Only touches the DOM when the shown state actually differs.
+    function paintPlaying(wantPlaying) {
+      wantPlaying = !!wantPlaying;
       var showingPause = playBtn.getAttribute("data-state") === "pause";
-      var next = !showingPause;
-      playBtn.innerHTML = next ? SVG.pause : SVG.play;
-      playBtn.setAttribute("data-state", next ? "pause" : "play");
-      playBtn.setAttribute("aria-label", next ? "Pause" : "Play");
-      miniPlay.innerHTML = next ? SVG.pause : SVG.play;
-      miniPlay.setAttribute("data-state", next ? "pause" : "play");
-      miniPlay.setAttribute("aria-label", next ? "Pause" : "Play");
-      root.classList.toggle("spm-playing", next);
+      if (wantPlaying === showingPause) {
+        // Steady state: keep the mini button + halos in sync without
+        // rewriting icons (rewrites would restart CSS animations).
+        miniPlay.setAttribute("data-state", wantPlaying ? "pause" : "play");
+        miniPlay.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
+        root.classList.toggle("spm-playing", wantPlaying);
+        return;
+      }
+      paintPlayIcon(wantPlaying);
+    }
+
+    // Direct-watcher callback: Spotify's own button flipped. Instant, and the
+    // only writer besides snapshots — both funnel through paintPlaying.
+    function onDirectPlay(playing) {
+      directPlaying = !!playing;
+      try {
+        paintPlaying(directPlaying);
+      } catch (e) {}
+    }
+
+    // The tap only sends the command — painting waits for Spotify's button.
+    // The direct watcher reports the flip within a mutation beat, so this
+    // stays responsive without ever guessing.
+    function sendTogglePlay() {
+      try {
+        spotify.togglePlay();
+      } catch (e) {}
+    }
+
+    function bindTap(btn, onTap) {
+      var st = tapState();
+      btn.addEventListener("pointerdown", function (e) {
+        if (tapDown(st, e)) pressFeedback(btn);
+      });
+      btn.addEventListener("pointerup", function (e) {
+        if (tapUp(st, e) === "tap") onTap(true);
+      });
+      btn.addEventListener("pointercancel", function () {
+        tapCancel(st);
+      });
+      btn.addEventListener("click", function (e) {
+        if (tapClick(st, e) === "tap") onTap(false);
+      });
+      return st;
     }
 
     // --- transport wiring (adapter only) ---
-    playBtn.addEventListener("click", function () {
-      pressFeedback(playBtn);
-      optimisticPlayFlip();
-      spotify.togglePlay();
-    });
-    prevBtn.addEventListener("click", function () {
-      pressFeedback(prevBtn);
+    bindTap(playBtn, sendTogglePlay);
+    bindTap(prevBtn, function () {
       spotify.previous();
     });
-    nextBtn.addEventListener("click", function () {
-      pressFeedback(nextBtn);
+    bindTap(nextBtn, function () {
       spotify.next();
     });
-    shuffleBtn.addEventListener("click", function () {
-      pressFeedback(shuffleBtn);
+    bindTap(shuffleBtn, function () {
       spotify.toggleShuffle();
     });
-    repeatBtn.addEventListener("click", function () {
-      pressFeedback(repeatBtn);
+    bindTap(repeatBtn, function () {
       spotify.toggleRepeat();
     });
     // Heart follows Spotify's own order: unsaved -> tap Likes instantly;
@@ -634,8 +791,10 @@
     // decision reads Spotify's LIVE state (not the last snapshot, which can
     // lag a beat behind external changes); the sheet always loads truth on
     // open, so a wrong branch self-corrects either way.
-    function heartTap(btn) {
-      pressFeedback(btn);
+    // NOTE: no optimistic heart fill here — the Like round trip is async and
+    // the snapshot (plus flourish) confirms it. The responsiveness fix is the
+    // pointerup fast path itself (bindTap below), not a faked state.
+    function heartTap(btn, fromPointer) {
       var liked = false;
       try {
         liked = !!spotify.isLiked();
@@ -643,7 +802,7 @@
         liked = !!(lastSnap && lastSnap.liked);
       }
       if (liked) {
-        openPSheet();
+        openPSheet(fromPointer);
         return;
       }
       try {
@@ -655,10 +814,10 @@
         } catch (e2) {}
       }
     }
-    likeBtn.addEventListener("click", function () {
-      heartTap(likeBtn);
+    bindTap(likeBtn, function (fromPointer) {
+      heartTap(likeBtn, fromPointer);
     });
-    lyricsBtn.addEventListener("click", function () {
+    bindTap(lyricsBtn, function () {
       if (spotify.openLyrics() === false) setStatus("Lyrics is not available right now.");
     });
     contextLink.addEventListener("click", function () {
@@ -699,36 +858,46 @@
         if (!collapsed) setCollapsed(true);
       } catch (e) {}
     });
-    queueBtn.addEventListener("click", function () {
+    bindTap(queueBtn, function () {
       if (spotify.openQueue() === false) setStatus("Queue is not available right now.");
     });
     // Devices now opens our own sheet (see the Devices sheet section above).
-    muteBtn.addEventListener("click", function () {
+    bindTap(muteBtn, function () {
       spotify.toggleMute();
     });
-    collapseBtn.addEventListener("click", function () {
+    bindTap(collapseBtn, function () {
       collapseAnimated();
     });
 
     // --- mini-player wiring (same component, compact state) ---
-    miniPlay.addEventListener("click", function (e) {
-      if (e && e.stopPropagation) e.stopPropagation();
-      pressFeedback(miniPlay);
-      optimisticPlayFlip();
-      spotify.togglePlay();
+    // Mini buttons stop propagation so the mini-container tap-to-expand never
+    // sees them; they share the same pointerup fast path + click fallback.
+    function bindTapStop(btn, onTap) {
+      var st = tapState();
+      btn.addEventListener("pointerdown", function (e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        if (tapDown(st, e)) pressFeedback(btn);
+      });
+      btn.addEventListener("pointerup", function (e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        if (tapUp(st, e) === "tap") onTap(true);
+      });
+      btn.addEventListener("pointercancel", function () {
+        tapCancel(st);
+      });
+      btn.addEventListener("click", function (e) {
+        if (e && e.stopPropagation) e.stopPropagation();
+        if (tapClick(st, e) === "tap") onTap(false);
+      });
+    }
+    bindTapStop(miniPlay, sendTogglePlay);
+    bindTapStop(miniLike, function (fromPointer) {
+      heartTap(miniLike, fromPointer);
     });
-    miniLike.addEventListener("click", function (e) {
-      if (e && e.stopPropagation) e.stopPropagation();
-      heartTap(miniLike);
-    });
-    miniPrev.addEventListener("click", function (e) {
-      if (e && e.stopPropagation) e.stopPropagation();
-      pressFeedback(miniPrev);
+    bindTapStop(miniPrev, function () {
       spotify.previous();
     });
-    miniNext.addEventListener("click", function (e) {
-      if (e && e.stopPropagation) e.stopPropagation();
-      pressFeedback(miniNext);
+    bindTapStop(miniNext, function () {
       spotify.next();
     });
     mini.addEventListener("click", function (e) {
@@ -757,7 +926,6 @@
     function paintVol(vv) {
       vv = Math.max(0, Math.min(100, Math.round(vv)));
       if (volFill) volFill.style.transform = "scaleX(" + vv / 100 + ")";
-      if (volKnob) volKnob.style.left = vv + "%";
       volBar.setAttribute("aria-valuemax", "100");
       volBar.setAttribute("aria-valuenow", String(vv));
       volBar.setAttribute("aria-valuetext", vv + " percent volume");
@@ -2104,9 +2272,13 @@
       });
     }
 
-    function openSheet() {
+    function openSheet(fromPointer) {
       if (sheetOpen) return;
       beginSheet();
+      // Arm the ghost guard ONLY for the pointer path (same contract as the
+      // mini-expand guard): a click-open has no trailing click to swallow, and
+      // arming would eat the next deliberate tap (e.g. backdrop-close).
+      if (fromPointer) armSheetGhost();
       if (prefersReducedMotion()) {
         setSheetAnim(false);
         paintSheet(0);
@@ -2300,6 +2472,7 @@
       if (e.pointerType === "mouse" && e.button !== 0) return;
       devicesPress = { id: e.pointerId, x: e.clientX, y: e.clientY };
       devicesRejectClick = false;
+      pressFeedback(devicesBtn);
     });
     devicesBtn.addEventListener("pointerup", function (e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -2313,7 +2486,7 @@
           return;
         }
       }
-      openSheet();
+      openSheet(true);
     });
     devicesBtn.addEventListener("pointercancel", function () {
       devicesPress = null;
@@ -2324,7 +2497,7 @@
         devicesRejectClick = false;
         return;
       }
-      openSheet();
+      openSheet(false);
     });
     backdropEl.addEventListener("click", function () {
       closeSheet();
@@ -2484,6 +2657,25 @@
       } catch (e) {}
     }
 
+    function paintPRow(btn, p, staged) {
+      // In-place staged-state paint for a single row: full renderPSheet()
+      // rebuilds the whole <ul>, which collapses the scroll container and
+      // jumps the list back to the top (plus drops keyboard focus). Staging a
+      // check must never rebuild — only fresh list/status arrivals do.
+      btn.classList.toggle("spm-pactive", !!staged);
+      btn.setAttribute("aria-pressed", staged ? "true" : "false");
+      btn.setAttribute(
+        "aria-label",
+        (p.isLikedSongs
+          ? (staged ? "Remove from Liked Songs: " : "Add to Liked Songs: ")
+          : (staged ? "Remove from " : "Add to ")) + (p.name || "playlist")
+      );
+      try {
+        var tail = btn.querySelector ? btn.querySelector(".spm-ptail") : null;
+        if (tail) tail.innerHTML = staged ? SVG.check : "";
+      } catch (e) {}
+    }
+
     function psheetRow(p) {
       var key = pkeyOf(p);
       var staged = pdraftOf(p);
@@ -2535,9 +2727,14 @@
       if (psheetSaving) btn.disabled = true;
       btn.addEventListener("click", function () {
         if (psheetSaving) return;
-        psheetDraft[key] = !staged;
+        var next = !pdraftOf(p);
+        psheetDraft[key] = next;
         psheetDirty = true;
-        renderPSheet();
+        // Targeted paint (no rebuild: rebuilding scrolls the list to the top).
+        // Keep the list signature in sync so a later identical render still
+        // short-circuits instead of rebuilding under the finger.
+        paintPRow(btn, p, next);
+        psheetListSig = plistSig(psheetFiltered()) + "|" + psheetStatus + "|" + pdraftSig();
       });
       li.appendChild(btn);
       return li;
@@ -2580,6 +2777,41 @@
     }
 
     function renderPSheet() {
+      // Rebuilding the <ul> collapses the scroll container for a frame, which
+      // resets .spm-pbody to the top and drops keyboard focus. A fresh-data
+      // arrival while the user is staged/scrolled mid-list must not yank them
+      // (staging taps avoid this entirely via paintPRow, but truth reloads
+      // still rebuild). Preserve both across the rebuild.
+      var savedTop = 0;
+      var savedFocusIndex = -1;
+      try {
+        savedTop = psheetBody ? psheetBody.scrollTop || 0 : 0;
+      } catch (e) {}
+      try {
+        var ae = document.activeElement;
+        if (ae && psheetListEl && psheetListEl.contains(ae)) {
+          var btns = psheetListEl.querySelectorAll(".spm-prow");
+          for (var fi = 0; fi < btns.length; fi++) {
+            if (btns[fi] === ae) {
+              savedFocusIndex = fi;
+              break;
+            }
+          }
+        }
+      } catch (e2) {}
+      // Restores scroll + focus saved at the top of renderPSheet.
+      function restorePScroll() {
+        try {
+          if (psheetBody) psheetBody.scrollTop = savedTop;
+        } catch (e3) {}
+        if (savedFocusIndex >= 0) {
+          try {
+            var fresh = psheetListEl.querySelectorAll(".spm-prow");
+            var tgt = fresh[Math.min(savedFocusIndex, fresh.length - 1)];
+            if (tgt && tgt.focus) tgt.focus({ preventScroll: true });
+          } catch (e4) {}
+        }
+      }
       while (psheetListEl.firstChild) psheetListEl.removeChild(psheetListEl.firstChild);
       var rows = psheetFiltered();
       var showList = psheetStatus === "ready" && rows.length > 0;
@@ -2593,7 +2825,10 @@
         for (var i = 0; i < rows.length; i++) {
           psheetListEl.appendChild(psheetRow(rows[i]));
         }
-        if (!likedOnly) return;
+        if (!likedOnly) {
+          restorePScroll();
+          return;
+        }
       }
       while (psheetState.firstChild) psheetState.removeChild(psheetState.firstChild);
       if (likedOnly) {
@@ -2602,9 +2837,11 @@
         none.textContent = "No other playlists found";
         wrap.appendChild(none);
         psheetState.appendChild(wrap);
+        restorePScroll();
         return;
       }
       psheetState.appendChild(psheetStatusBlock());
+      restorePScroll();
     }
 
     function applyPsheetList(list, statusHint, resetDraft) {
@@ -2963,9 +3200,10 @@
       });
     }
 
-    function openPSheet() {
+    function openPSheet(fromPointer) {
       if (psheetOpen) return;
       beginPSheet();
+      if (fromPointer) armSheetGhost();
       if (prefersReducedMotion()) {
         setPSheetAnim(false);
         paintPSheet(0);
@@ -3258,18 +3496,17 @@
         }
       } catch (e) {}
 
-      // Play / pause icon (only touch DOM when it flips).
-      var wantPlaying = !!snap.isPlaying;
-      var showingPause = playBtn.getAttribute("data-state") === "pause";
-      if (wantPlaying !== showingPause) {
-        playBtn.innerHTML = wantPlaying ? SVG.pause : SVG.play;
-        playBtn.setAttribute("data-state", wantPlaying ? "pause" : "play");
-        playBtn.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
-        miniPlay.innerHTML = wantPlaying ? SVG.pause : SVG.play;
-      }
-      miniPlay.setAttribute("data-state", wantPlaying ? "pause" : "play");
-      miniPlay.setAttribute("aria-label", wantPlaying ? "Pause" : "Play");
-      root.classList.toggle("spm-playing", wantPlaying);
+      // Icons + halos mirror Spotify's OWN toggle button (directPlaying) when
+      // it has been read; the debounced snapshot is only the fallback/seed.
+      // Both sources funnel through paintPlaying, so they can never disagree
+      // into a play -> pause -> play flap.
+      try {
+        paintPlaying(
+          directPlaying === null || directPlaying === undefined
+            ? !!snap.isPlaying
+            : !!directPlaying
+        );
+      } catch (e) {}
 
       // Modes.
       shuffleBtn.classList.toggle("spm-active", !!snap.shuffle);
@@ -3520,6 +3757,19 @@
         );
       } catch (e) {}
       try {
+        // Seed the direct mirror before the first paint so icons never flash
+        // from a stale snapshot: the live button wins from frame one.
+        try {
+          if (spotify.getPlayState) {
+            var seedPlay = spotify.getPlayState();
+            if (seedPlay !== null && seedPlay !== undefined) directPlaying = !!seedPlay;
+          }
+        } catch (eSeed) {}
+        try {
+          if (spotify.watchPlayState) unwatchPlayState = spotify.watchPlayState(onDirectPlay);
+        } catch (eWatch) {
+          unwatchPlayState = null;
+        }
         unsubscribe = spotify.subscribe(function (snap) {
           render(snap);
         });
@@ -3552,6 +3802,13 @@
         tickInterval = 0;
       }
       if (unsubscribe) unsubscribe();
+      unsubscribe = null;
+      if (unwatchPlayState) {
+        try {
+          unwatchPlayState();
+        } catch (e) {}
+        unwatchPlayState = null;
+      }
       if (root.parentNode) root.parentNode.removeChild(root);
     }
 
