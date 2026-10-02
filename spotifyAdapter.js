@@ -3502,10 +3502,47 @@
     return all.length ? all[0].el : null;
   }
 
+  // Hot-read cache for the curation button. isLiked() runs on EVERY snapshot
+  // (every mutation batch + every fallback tick), and an uncached read is a
+  // document-wide buttonTertiary scan plus a getClientRects/getBoundingClientRect
+  // + closest() walk per candidate — O(page size) with forced layout reads,
+  // several times a second, on a page with hundreds of track-row hearts.
+  // The bottom-bar button barely moves, so memoize it: re-resolve only when
+  // it leaves the DOM or the entry goes stale (30s). Track-row lookalikes are
+  // never cached (they belong to other tracks); the candidate enumeration
+  // used by ensureCurationSheet stays fully live.
+  var cachedCurationBtn = null;
+  var cachedCurationAt = 0;
+  var CURATION_CACHE_MS = 30000;
+
   function curationLikedState() {
+    var now = 0;
+    try {
+      now = Date.now();
+    } catch (e) {}
     var btn = null;
     try {
-      btn = findCurationButton();
+      if (
+        cachedCurationBtn &&
+        document.contains(cachedCurationBtn) &&
+        now - cachedCurationAt < CURATION_CACHE_MS
+      ) {
+        btn = cachedCurationBtn;
+      } else {
+        btn = findCurationButton();
+        var inPlayer = false;
+        try {
+          var w = findWidget();
+          var p = findPlayer();
+          inPlayer = !!((w && w.contains(btn)) || (p && p.contains(btn)));
+        } catch (e2) {}
+        if (btn && inPlayer) {
+          cachedCurationBtn = btn;
+          cachedCurationAt = now;
+        } else {
+          cachedCurationBtn = null;
+        }
+      }
     } catch (e) {
       btn = null;
     }
@@ -3513,7 +3550,7 @@
     try {
       var c = btn.getAttribute("aria-checked");
       if (c !== null) return c === "true";
-    } catch (e) {}
+    } catch (e3) {}
     return null;
   }
 
@@ -5593,7 +5630,44 @@
     observerStarted = true;
     try {
       observer = new MutationObserver(function (mutations) {
+        // Scoped relevance: snapshots only read the player bar, the Now
+        // Playing panel, and (for artwork) media — so mutations anywhere else
+        // (sidebar renders, feed updates, lazy images across the page, and our
+        // own #spm-root churn like the 1Hz progress ARIA writes) must not each
+        // trigger a full getSnapshot. Previously ANY childList/aria change
+        // anywhere did, i.e. effectively continuous full snapshots while
+        // browsing. Track changes always mutate the player subtree itself
+        // (track link text, artwork src, toggle labels), so nothing real is
+        // missed; login/logout (player appearing/vanishing) is caught by the
+        // containment check below.
         var relevant = false;
+        var playerScope = null;
+        var npvScope = null;
+        var scopesResolved = false;
+        function scopes() {
+          if (!scopesResolved) {
+            scopesResolved = true;
+            try {
+              playerScope = findPlayer();
+            } catch (e) {
+              playerScope = null;
+            }
+            try {
+              npvScope = document.querySelector('[data-testid="NPV_Panel_OpenDiv"]');
+            } catch (e2) {
+              npvScope = null;
+            }
+          }
+          return !!(playerScope || npvScope);
+        }
+        function inScope(el) {
+          if (!el || !el.tagName) return false;
+          try {
+            if (playerScope && (playerScope === el || playerScope.contains(el))) return true;
+            if (npvScope && (npvScope === el || npvScope.contains(el))) return true;
+          } catch (e) {}
+          return false;
+        }
         for (var i = 0; i < mutations.length; i++) {
           var m = mutations[i];
           if (m.type === "attributes") {
@@ -5606,12 +5680,34 @@
               m.attributeName === "data-active" ||
               m.attributeName === "disabled"
             ) {
+              scopes();
+              // No player/panel on the page (logged out): keep the old
+              // catch-all behaviour so state transitions are still noticed.
+              if (!playerScope && !npvScope) {
+                relevant = true;
+                break;
+              }
+              if (inScope(m.target)) {
+                relevant = true;
+                break;
+              }
+            }
+          } else if (m.type === "childList") {
+            scopes();
+            if (!playerScope && !npvScope) {
               relevant = true;
               break;
             }
-          } else if (m.type === "childList") {
-            relevant = true;
-            break;
+            // Added/removed nodes inside our scopes matter; anything else is
+            // Spotify repainting content we never read. A vanished player root
+            // also matters (logout/navigation) — caught by containment below.
+            if (
+              inScope(m.target) ||
+              (playerScope && !document.contains(playerScope))
+            ) {
+              relevant = true;
+              break;
+            }
           }
         }
         if (relevant) emitDebounced();
@@ -5633,9 +5729,12 @@
     } catch (e) {
       observer = null;
     }
-    // Light fallback: re-check at most every 2s, only does work when the
-    // player is missing or tracks change. Backs off to 5s once stable.
-    // Skipped while the tab is hidden (nothing can be seen anyway).
+    // Light fallback: re-check while the player is missing or tracks change.
+    // Backs off to 5s once stable — and to 15s while paused with nothing in
+    // flight, so a paused background tab stops burning CPU/battery (heat =>
+    // throttling => everything feels slower). Paused changes that arrive via
+    // our own clicks still surface instantly through the observer above, so
+    // the slow tick only delays genuinely external paused changes.
     var stableTicks = 0;
     function tick() {
       try {
@@ -5652,7 +5751,20 @@
         }
         stableTicks++;
         emit(false);
-        fallbackTimer = setTimeout(tick, stableTicks > 10 ? 5000 : 2000);
+        var busy = !!(deviceBusy || playlistBusy);
+        var paused = false;
+        try {
+          paused = !isPlaying();
+        } catch (e2) {}
+        var nextMs;
+        if (busy) {
+          nextMs = 2000;
+        } else if (paused) {
+          nextMs = 15000;
+        } else {
+          nextMs = stableTicks > 10 ? 5000 : 2000;
+        }
+        fallbackTimer = setTimeout(tick, nextMs);
       } catch (e) {
         fallbackTimer = setTimeout(tick, 2000);
       }

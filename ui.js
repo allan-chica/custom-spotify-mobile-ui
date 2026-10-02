@@ -125,7 +125,6 @@
       "</div>" +
       '<div class="spm-miniplayer" role="region" aria-label="Mini player">' +
       '<div class="spm-mini-progress" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="spm-mini-progress-fill"></div></div>' +
-      '<div class="spm-mini-halos" aria-hidden="true"></div>' +
       '<div class="spm-mini-artwrap"><img class="spm-mini-art" alt="" draggable="false" />' +
       '<div class="spm-mini-fallback" aria-hidden="true">' + SVG.note + "</div></div>" +
       '<div class="spm-mini-titles"><div class="spm-mini-title">Nothing playing</div>' +

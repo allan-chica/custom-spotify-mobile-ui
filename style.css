@@ -511,18 +511,21 @@
 }
 
 /* ---------- Skeleton loading (before first track) ----------
- * Replaces the "Nothing playing" dummy text with shimmering
+ * Replaces the "Nothing playing" dummy text with pulsing
  * placeholders. Active only while #spm-root carries .spm-loading
  * (toggled from ui.js: true until the first real track arrives).
  * Text is made transparent and replaced by animated bars; artwork
- * shows a shimmer instead of the note fallback. Purely visual:
+ * shows a pulse instead of the note fallback. Opacity-only on purpose:
+ * the old background-position shimmer repainted every frame, right in
+ * the middle of cold start when the phone is busiest. Purely visual:
  * screen readers get aria-busy on the root. */
 @keyframes spm-skeleton {
-  0% {
-    background-position: 200% 0;
-  }
+  0%,
   100% {
-    background-position: -200% 0;
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
   }
 }
 
@@ -1037,82 +1040,7 @@
   border-radius: 26%;
   overflow: hidden;
   background: linear-gradient(145deg, #232326, #141415);
-  /* Stay above the mini glow (see .spm-mini-halos below). */
   z-index: 1;
-}
-
-/* ---------- Mini-player glow (behind the mini cover) ----------
- * Same compositor-only technique as the full-card halos: off-center
- * gradients on asymmetric clips, transform/translate animation only
- * (never border-radius / filter / blur, which repaint per frame).
- * The layer is TINY (~64px) so its texture cost is negligible, and it
- * is fully frozen (animation-play-state: paused, opacity 0) unless the
- * mini is visible AND playing AND artwork is present — same contract
- * as the main halo. That is why adding it costs ~nothing measurable:
- * paused CSS animations on a 64px layer don't composite per frame. */
-#spm-root .spm-mini-halos {
-  position: absolute;
-  left: 2px;
-  top: 50%;
-  width: 60px;
-  height: 60px;
-  transform: translateY(-50%);
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0;
-  transition: opacity 0.25s ease;
-  background: radial-gradient(circle, var(--spm-glow-strong) 0%, transparent 65%);
-  animation: spm-mini-halo-core 2.6s ease-in-out infinite;
-}
-
-#spm-root .spm-mini-halos::before,
-#spm-root .spm-mini-halos::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-}
-
-#spm-root .spm-mini-halos::before {
-  opacity: 0.9;
-  border-radius: 58% 42% 55% 45% / 52% 56% 44% 48%;
-  background: radial-gradient(58% 42% at 38% 34%, rgba(var(--spm-halo-cover-rgb), 0.5) 0%, transparent 70%);
-  animation: spm-wisp-a 7s linear infinite, spm-wisp-drift-a 11s ease-in-out infinite alternate;
-}
-
-#spm-root .spm-mini-halos::after {
-  opacity: 0.85;
-  border-radius: 46% 54% 60% 40% / 56% 44% 58% 42%;
-  background: radial-gradient(62% 48% at 62% 66%, rgba(var(--spm-halo-accent-rgb), 0.38) 0%, transparent 70%);
-  animation: spm-wisp-b 10s linear infinite, spm-wisp-drift-b 13s ease-in-out infinite alternate;
-}
-
-/* Visible only when the mini itself is visible (collapsed) + playing +
- * artwork present. No sheet gate: the mini is 44px everywhere, so the
- * cost is identical on desktop and mobile. */
-#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos {
-  opacity: 1;
-}
-
-#spm-root .spm-mini-halos,
-#spm-root .spm-mini-halos::before,
-#spm-root .spm-mini-halos::after {
-  animation-play-state: paused;
-}
-
-#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos,
-#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos::before,
-#spm-root.spm-collapsed.spm-playing.spm-has-art .spm-mini-halos::after {
-  animation-play-state: running;
-}
-
-@keyframes spm-mini-halo-core {
-  0%,
-  100% {
-    transform: translateY(-50%) scale(1);
-  }
-  50% {
-    transform: translateY(-50%) scale(1.12);
-  }
 }
 
 #spm-root .spm-mini-art {
@@ -1392,9 +1320,6 @@
   #spm-root .spm-halos,
   #spm-root .spm-halos::before,
   #spm-root .spm-halos::after,
-  #spm-root .spm-mini-halos,
-  #spm-root .spm-mini-halos::before,
-  #spm-root .spm-mini-halos::after,
   #spm-root .spm-mini,
   #spm-root .spm-miniplayer,
   #spm-root .spm-fill,
