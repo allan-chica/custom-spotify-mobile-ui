@@ -40,6 +40,8 @@
       '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="11" rx="2"/><path d="M6 19h6"/><path d="M18 9h3a1 1 0 011 1v9a1 1 0 01-1 1h-7a1 1 0 01-1-1v-9a1 1 0 011-1h4z"/></svg>',
     check:
       '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 12.5 10 17.5 19 7"/></svg>',
+    close:
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
     spinner:
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 019 9"/></svg>',
     chevLeft:
@@ -118,8 +120,11 @@
       "</div>" +
       "</div>" +
       '<div class="spm-lyrics">' +
-      "<span>Lyrics</span>" +
-      '<button class="spm-expand spm-lyrics-open" type="button" aria-label="Open lyrics in Spotify">' + SVG.expand + "</button>" +
+      '<button class="spm-lyrics-open" type="button" aria-label="Open lyrics">' +
+      '<span class="spm-lyrics-head"><span>Lyrics</span>' +
+      '<span class="spm-expand" aria-hidden="true">' + SVG.expand + "</span></span>" +
+      '<span class="spm-lyrics-preview" aria-hidden="true"></span>' +
+      "</button>" +
       "</div>" +
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
@@ -173,6 +178,18 @@
       '<button class="spm-pdone" type="button">Done</button>' +
       "</div>" +
       '<p class="spm-pnotice" role="status" hidden></p>' +
+      "</section>" +
+      // --- custom fullscreen Lyrics (mirrors Spotify's own fullscreen) ---
+      '<div class="spm-lbackdrop" hidden></div>' +
+      '<section class="spm-lsheet" role="dialog" aria-modal="true" aria-labelledby="spm-lsheet-title" tabindex="-1" hidden>' +
+      '<header class="spm-lhead">' +
+      '<h3 class="spm-ltitle" id="spm-lsheet-title">Lyrics</h3>' +
+      '<button class="spm-lclose" type="button" aria-label="Close lyrics">' + SVG.close + "</button>" +
+      "</header>" +
+      '<div class="spm-lbody">' +
+      '<div class="spm-llist"></div>' +
+      '<div class="spm-lstate" hidden></div>' +
+      "</div>" +
       "</section>";
 
     // All queries below are scoped to our own container — never Spotify's DOM.
@@ -254,6 +271,14 @@
     var psheetSearchInput = q(".spm-psearch-input");
     var psheetCancelBtn = q(".spm-pcancel");
     var psheetDoneBtn = q(".spm-pdone");
+    // Fullscreen Lyrics refs (own layer, same pattern as the sheets).
+    var lsheetEl = q(".spm-lsheet");
+    var lbackdropEl = q(".spm-lbackdrop");
+    var lsheetBody = q(".spm-lbody");
+    var lsheetListEl = q(".spm-llist");
+    var lsheetState = q(".spm-lstate");
+    var lsheetCloseBtn = q(".spm-lclose");
+    var lyricsPreviewEl = q(".spm-lyrics-preview");
 
     var collapsed = false;
     var seeking = false;
@@ -438,7 +463,8 @@
               if (e.target && e.target.closest) {
                 inSheet = !!(
                   e.target.closest(".spm-dsheet") ||
-                  e.target.closest(".spm-psheet")
+                  e.target.closest(".spm-psheet") ||
+                  e.target.closest(".spm-lsheet")
                 );
               }
             } catch (err2) {}
@@ -817,7 +843,7 @@
       heartTap(likeBtn, fromPointer);
     });
     bindTap(lyricsBtn, function () {
-      if (spotify.openLyrics() === false) setStatus("Lyrics is not available right now.");
+      openLSheet();
     });
     contextLink.addEventListener("click", function () {
       // Open it the Spotify way: the adapter clicks Spotify's OWN context
@@ -2519,6 +2545,11 @@
       // Adapter-synthesized menu dismissals (marked) are not the user.
       if (e && e.__spmSynthetic) return;
       if (e.key !== "Escape" && e.key !== "Esc") return;
+      if (lsheetOpen || lOpening) {
+        e.preventDefault();
+        closeLSheet();
+        return;
+      }
       if (psheetOpen) {
         e.preventDefault();
         closePSheet();
@@ -3332,6 +3363,390 @@
       });
     }
 
+    /* ---------- Fullscreen Lyrics (custom mirror) ----------
+     *
+     * Presentation layer only: every line, the active index, and the palette
+     * come from the adapter, which owns ALL Spotify DOM work (preview
+     * section first, Spotify's own fullscreen behind a veil). This layer
+     * never queries Spotify's DOM.
+     *
+     * Flow: tapping our preview opens Spotify's fullscreen (veiled) and
+     * paints our own opaque fullscreen above it; the adapter's watcher keeps
+     * feeding line/active updates, and the active line auto-scrolls into
+     * view. Closing (X, backdrop, Escape) hides ours first, then takes
+     * Spotify's fullscreen down too — never one without the other.
+     */
+    var lsheetOpen = false;
+    var lsheetTimer = 0;
+    var lTrackKey = "";
+    var lActive = -2; // last painted active index (-2 = nothing painted yet)
+    var lColors = null;
+    var lOpening = false; // Spotify fullscreen open in flight
+    var lLastUserScroll = 0;
+    var unwatchLyrics = null;
+    var lSig = "";
+    var lPaintedCount = 0; // rows currently painted in the open fullscreen
+    var lPaintedFull = false; // that paint came from the fullscreen copy
+    var lLastGoodAt = 0; // last delivery that carried rows (either copy)
+
+    function llyricsSig(st) {
+      var list = (st.full && st.full.length ? st.full : st.preview) || [];
+      var lens = 0;
+      for (var i = 0; i < list.length; i++) lens += ((list[i] && list[i].text) || "").length;
+      return (st.trackKey || "") + "|" + (st.fullscreenOpen ? "F" : "P") + "|" +
+        st.active + "|" + list.length + "|" + lens;
+    }
+
+    function applyLyricsColors(colors) {
+      lColors = colors || null;
+      var targets = [lsheetEl, lyricsBtn];
+      for (var i = 0; i < targets.length; i++) {
+        if (!targets[i] || !targets[i].style) continue;
+        try {
+          targets[i].style.setProperty("--spm-lyr-active", colors.active);
+          targets[i].style.setProperty("--spm-lyr-inactive", colors.inactive);
+          targets[i].style.setProperty("--spm-lyr-passed", colors.passed);
+          targets[i].style.setProperty("--spm-lyr-bg", colors.background);
+        } catch (e) {}
+      }
+    }
+
+    function lstatusBlock(text) {
+      var wrap = el("div", "spm-lstatus", null);
+      var msg = el("p", "spm-lmsg", null);
+      msg.textContent = text;
+      wrap.appendChild(msg);
+      return wrap;
+    }
+
+    // Preview: up to 3 lines windowed around the active one (Spotify palette).
+    function renderLyricsPreview(st) {
+      if (!lyricsPreviewEl) return;
+      while (lyricsPreviewEl.firstChild) lyricsPreviewEl.removeChild(lyricsPreviewEl.firstChild);
+      if (st) applyLyricsColors(st.colors);
+      var list = (st && st.available && st.preview && st.preview.length) ? st.preview : null;
+      lyricsPreviewEl.hidden = !list;
+      if (!list) {
+        llog("preview-empty", "");
+        return;
+      }
+      var at = (st.active >= 0 && st.active < list.length) ? st.active : -1;
+      var start = at === -1 ? 0 : Math.max(0, Math.min(at - 1, list.length - 3));
+      var shown = 0;
+      for (var i = start; i < list.length && shown < 3; i++) {
+        var row = list[i] || {};
+        var line = el("span", "spm-lyrics-line" + (i === at ? " spm-active" : ""), null);
+        var txt = row.text || "";
+        line.textContent = txt === "" ? "\u00a0" : txt;
+        lyricsPreviewEl.appendChild(line);
+        shown++;
+      }
+      llog("preview", "win=" + start + "-" + (start + shown - 1) + " active=" + at + " n=" + list.length);
+      ltrace("preview", "win=" + start + "-" + (start + shown - 1) + " active=" + at + " n=" + list.length);
+    }
+
+    function renderLSheetList(st) {
+      var list = (st.full && st.full.length ? st.full : st.preview) || [];
+      while (lsheetListEl.firstChild) lsheetListEl.removeChild(lsheetListEl.firstChild);
+      for (var i = 0; i < list.length; i++) {
+        var row = list[i] || {};
+        var txt = row.text || "";
+        var line = el(
+          "div",
+          "spm-lline" + (txt === "" ? " spm-lgap" : ""),
+          null
+        );
+        line.textContent = txt;
+        line.setAttribute("data-li", String(i));
+        lsheetListEl.appendChild(line);
+      }
+      while (lsheetState.firstChild) lsheetState.removeChild(lsheetState.firstChild);
+      if (!list.length) {
+        lsheetState.hidden = false;
+        lsheetState.appendChild(lstatusBlock(
+          st.available ? "No lyrics for this track." : "Lyrics aren't available right now."
+        ));
+      } else {
+        lsheetState.hidden = true;
+      }
+    }
+
+    // Content signature of the MOUNTED rows. Rebuilds happen only when the
+    // row set itself changes (mount / remount / track change) — active flips
+    // never rebuild, they move one class in place (paintLActive). Rebuilding
+    // 26 rows per line flip was both waste and a whole class of freeze races
+    // (rebuild vs highlight vs scroll/store ordering).
+    var lRowsSig = "";
+    function lsheetContentSig(list) {
+      var parts = [];
+      for (var i = 0; i < list.length; i++) parts.push((list[i] && list[i].text) || "");
+      return list.length + "|" + parts.join("\n");
+    }
+
+    // Ensures the mounted rows match `list`; returns true when it rebuilt.
+    // The active mark is NEVER applied here — paintLActive owns it, always.
+    function ensureLSheetRows(st) {
+      var list = (st.full && st.full.length ? st.full : st.preview) || [];
+      var sig = lsheetContentSig(list);
+      if (sig === lRowsSig) return false;
+      lRowsSig = sig;
+      llog("rebuild", list.length + " rows");
+      renderLSheetList(st);
+      return true;
+    }
+
+    // UI paint log (mirrors the adapter flight recorder): every rebuild,
+    // active move, hold and skip, so the next "it froze" paste shows the
+    // exact stall point instead of another guess.
+    function llog(ev, info) {
+      try {
+        var arr = window.SpotMobile.lyricsUiLog;
+        if (!arr) {
+          arr = window.SpotMobile.lyricsUiLog = [];
+        }
+        arr.push({ t: Date.now(), ev: ev, info: info || "" });
+        if (arr.length > 30) arr.splice(0, arr.length - 30);
+      } catch (e) {}
+    }
+
+    // Same opt-in live trace as the adapter (shared localStorage flag, no
+    // reload needed to toggle). Logs what the mini preview actually paints.
+    function ltrace(ev, info) {
+      var on = false;
+      try {
+        on = window.localStorage && window.localStorage.getItem("spm-debug-lyrics") === "1";
+      } catch (e) {}
+      if (on) {
+        try {
+          console.info("[spm][lyrics-ui]", ev, info || "");
+        } catch (e2) {}
+      }
+    }
+
+    function scrollLActive(force) {
+      if (!lsheetOpen) return;
+      if (!force && nowMs() - lLastUserScroll < 6000) return; // user is reading
+      var activeEl = null;
+      try {
+        activeEl = lsheetListEl.querySelector(".spm-lline.spm-active");
+      } catch (e) {}
+      if (!activeEl || !lsheetBody) return;
+      try {
+        var top = activeEl.offsetTop - lsheetBody.clientHeight / 2 + activeEl.clientHeight / 2;
+        lsheetBody.scrollTop = Math.max(0, Math.round(top));
+      } catch (e2) {}
+    }
+
+    function paintLActive(index) {
+      var prev = null;
+      try {
+        prev = lsheetListEl.querySelector(".spm-lline.spm-active");
+      } catch (e) {}
+      if (prev) prev.classList.remove("spm-active");
+      if (index >= 0) {
+        var next = null;
+        try {
+          next = lsheetListEl.querySelector('.spm-lline[data-li="' + index + '"]');
+        } catch (e2) {}
+        if (next) next.classList.add("spm-active");
+      }
+      if (index !== lActive) llog("active", lActive + "->" + index);
+      lActive = index;
+      scrollLActive(false);
+    }
+
+    // A track key with no text on either side is a mid-render glitch, not a
+    // track change (Spotify renders title before artist; see ptrackKeyOf).
+    // Same class of transient syncPsheetWithSnap already guards against.
+    function lyricsKeyEmpty(k) {
+      var s = String(k || "").trim();
+      return s === "" || s === "|";
+    }
+
+    // Single entry for adapter pushes: preview always, fullscreen when open.
+    function onLyricsState(st) {
+      if (!st) return;
+      renderLyricsPreview(st);
+      if (!lsheetOpen) return;
+      var sig = llyricsSig(st);
+      if (sig === lSig) return;
+      var now = nowMs();
+      var fullRows = (st.full && st.full.length) ? st.full : null;
+      var newRows = fullRows || st.preview || [];
+      // Last delivery that carried rows of either copy. Overlay-only
+      // tracking used to leave this at 0 forever in inline mode (no overlay
+      // copy exists there — live-observed: Show more expands the snippet in
+      // place), disabling the 5s lookalike-key guard below for exactly the
+      // tracks that need it.
+      if (newRows.length) lLastGoodAt = now;
+      var trackChanged = st.trackKey !== lTrackKey;
+      // Never blank a painted fullscreen on transient states: (a) totally
+      // empty updates (Spotify tearing down/rebuilding rows around its
+      // fullscreen open), (b) a fullscreen copy we HAD vanishing while the
+      // snippet still lives (keep the painted long list, not a short fallback
+      // swap — and never treat inline mode, which has no copy at all, as a
+      // teardown), (c) empty keys (mid-render text gaps), or (d) a changed
+      // key within 5s of a good paint (late artist text forging a
+      // lookalike key). All holds keep the old key/sig, so the recovery
+      // delivery still differs and repaints. A genuinely lyrics-less track
+      // still blanks — at most ~5s late.
+      var lostFull = lPaintedFull && !fullRows;
+      if (lPaintedCount > 0 && (newRows.length === 0 || lostFull) &&
+          (!trackChanged || lyricsKeyEmpty(st.trackKey) || now - lLastGoodAt < 5000)) {
+        llog("hold", "active=" + st.active + " n=" + newRows.length);
+        return;
+      }
+      lTrackKey = st.trackKey || "";
+      lSig = sig;
+      var rebuilt = ensureLSheetRows(st);
+      lPaintedCount = newRows.length;
+      lPaintedFull = !!fullRows;
+      if (trackChanged) {
+        try {
+          if (lsheetBody) lsheetBody.scrollTop = 0;
+        } catch (e) {}
+      }
+      // After a rebuild the DOM holds no mark while lActive still names the
+      // old index — force the paint so the highlight can never be stranded.
+      if (rebuilt) lActive = -2;
+      if (st.active !== lActive) paintLActive(st.active);
+      else scrollLActive(false);
+    }
+
+    function beginLSheet() {
+      if (lsheetOpen) return;
+      try {
+        if (typeof closeSheet === "function") closeSheet();
+      } catch (e1) {}
+      try {
+        if (typeof closePSheet === "function") closePSheet();
+      } catch (e2) {}
+      lsheetOpen = true;
+      lActive = -2;
+      lSig = "";
+      lRowsSig = "";
+      lPaintedCount = 0;
+      lPaintedFull = false;
+      lLastGoodAt = 0;
+      lTrackKey = "";
+      lLastUserScroll = 0;
+      root.classList.add("spm-lyrics-open");
+      lsheetEl.hidden = false;
+      lbackdropEl.hidden = false;
+      try {
+        cardEl.setAttribute("aria-hidden", "true");
+        mini.setAttribute("aria-hidden", "true");
+      } catch (e3) {}
+      while (lsheetListEl.firstChild) lsheetListEl.removeChild(lsheetListEl.firstChild);
+      while (lsheetState.firstChild) lsheetState.removeChild(lsheetState.firstChild);
+      lsheetState.hidden = false;
+      lsheetState.appendChild(lstatusBlock("Loading lyrics…"));
+      try {
+        abortGesture();
+      } catch (e4) {}
+    }
+
+    function finishLSheetOpen() {
+      try {
+        lsheetEl.focus({ preventScroll: true });
+      } catch (e) {}
+    }
+
+    function openLSheet() {
+      if (lsheetOpen || lOpening) return;
+      beginLSheet();
+      try {
+        if (prefersReducedMotion()) lsheetEl.focus({ preventScroll: true });
+        else window.setTimeout(finishLSheetOpen, 250);
+      } catch (e) {}
+      lOpening = true;
+      var promise = null;
+      try {
+        promise = spotify.openLyricsFullscreen ? spotify.openLyricsFullscreen() : null;
+      } catch (e2) {
+        promise = null;
+      }
+      if (!promise || !promise.then) {
+        lOpening = false;
+        onLyricsState({ available: false, trackKey: "", preview: [], full: [], active: -1,
+          colors: lColors, fullscreenOpen: false, hasMore: false });
+        return;
+      }
+      promise.then(function (res) {
+        lOpening = false;
+        if (!lsheetOpen) return;
+        if (!res || !res.ok) {
+          onLyricsState({ available: false, trackKey: "", preview: [], full: [], active: -1,
+            colors: lColors, fullscreenOpen: false, hasMore: false });
+          return;
+        }
+        var st = null;
+        try {
+          st = spotify.getLyricsState ? spotify.getLyricsState() : null;
+        } catch (e3) {}
+        if (st) onLyricsState(st);
+      }).catch(function () {
+        lOpening = false;
+        if (!lsheetOpen) return;
+        onLyricsState({ available: false, trackKey: "", preview: [], full: [], active: -1,
+          colors: lColors, fullscreenOpen: false, hasMore: false });
+      });
+    }
+
+    function hideLSheetNow() {
+      lsheetEl.hidden = true;
+      lbackdropEl.hidden = true;
+      try {
+        likeBtn.focus({ preventScroll: true });
+      } catch (e) {}
+      envSample = null;
+      scheduleEnvironment();
+    }
+
+    // Closing ours ALWAYS closes Spotify's too (requirement) — ours hides
+    // instantly so the tap feels immediate; Spotify's close resolves after.
+    function closeLSheet() {
+      if (!lsheetOpen && !lOpening) return;
+      lsheetOpen = false;
+      lOpening = false;
+      root.classList.remove("spm-lyrics-open");
+      try {
+        cardEl.removeAttribute("aria-hidden");
+        mini.removeAttribute("aria-hidden");
+      } catch (e) {}
+      if (prefersReducedMotion()) {
+        hideLSheetNow();
+      } else {
+        window.clearTimeout(lsheetTimer);
+        lsheetTimer = window.setTimeout(hideLSheetNow, 200);
+      }
+      var promise = null;
+      try {
+        promise = spotify.closeLyricsFullscreen ? spotify.closeLyricsFullscreen() : null;
+      } catch (e2) {
+        promise = null;
+      }
+      if (promise && promise.then) {
+        promise.then(function (res) {
+          if (res && !res.ok) setStatus("Couldn't close Spotify lyrics.");
+        }).catch(function () {});
+      }
+    }
+
+    if (lsheetCloseBtn) {
+      lsheetCloseBtn.addEventListener("click", function () {
+        closeLSheet();
+      });
+    }
+    lbackdropEl.addEventListener("click", function () {
+      closeLSheet();
+    });
+    if (lsheetBody) {
+      lsheetBody.addEventListener("scroll", function () {
+        lLastUserScroll = nowMs();
+      }, { passive: true });
+    }
+
     // --- snapshot rendering (no full DOM rebuilds) ---
     function render(snap) {
       var prevSnap = lastSnap;
@@ -3594,6 +4009,21 @@
         syncPsheetWithSnap(snap);
       } catch (e) {}
 
+      // Lyrics follow track changes even when Spotify's lyrics DOM doesn't
+      // mutate (lazy loads, missed batches): a forced sync re-read means a
+      // new song can never strand the previous song's lines on screen, and
+      // the warmup path primes a cold section from the fresh baseline.
+      // Guarded like the clock below: needs a real previous track and a real
+      // new one, so mid-render text gaps can't thrash it.
+      try {
+        var lyrPrevTrack = prevSnap && prevSnap.track ? prevSnap.track : "";
+        var lyrNewTrack = snap.track || "";
+        if (lyrPrevTrack && lyrNewTrack && lyrNewTrack !== lyrPrevTrack &&
+            spotify.refreshLyrics) {
+          spotify.refreshLyrics();
+        }
+      } catch (eLyr) {}
+
       // Re-anchor the smooth clock. Spotify reports whole seconds, so a
       // hard snap on every snapshot would yank the gliding estimate back
       // to an integer (the visible "jump"). Instead: hard rebase only on
@@ -3769,6 +4199,14 @@
         } catch (eWatch) {
           unwatchPlayState = null;
         }
+        try {
+          if (spotify.watchLyrics) unwatchLyrics = spotify.watchLyrics(onLyricsState);
+        } catch (eLyricsWatch) {
+          unwatchLyrics = null;
+        }
+        try {
+          if (spotify.getLyricsState) onLyricsState(spotify.getLyricsState());
+        } catch (eLyricsSeed) {}
         unsubscribe = spotify.subscribe(function (snap) {
           render(snap);
         });
@@ -3807,6 +4245,12 @@
           unwatchPlayState();
         } catch (e) {}
         unwatchPlayState = null;
+      }
+      if (unwatchLyrics) {
+        try {
+          unwatchLyrics();
+        } catch (e2) {}
+        unwatchLyrics = null;
       }
       if (root.parentNode) root.parentNode.removeChild(root);
     }

@@ -17,6 +17,12 @@
 (function () {
   "use strict";
 
+  // Build marker: bump on every shipped change. Reported in inspectLyrics()
+  // and the mount log so a paste instantly shows whether the tab runs the
+  // latest code — content scripts only refresh on extension reload + full
+  // tab reload, so a stale tab otherwise debugs like a ghost.
+  var BUILD = "lx18";
+
   var TESTIDS = {
     playerBar: "now-playing-bar",
     widget: "now-playing-widget",
@@ -5559,6 +5565,1271 @@
     };
   }
 
+  /* ---------- Lyrics (preview + fullscreen mirror) ----------
+   *
+   * LIVE-OBSERVED on open.spotify.com (structure + testids from the shipped
+   * page — never guessed; obfuscated class names are never used):
+   *
+   * - Preview: div[data-testid="lyrics-npv-section"] carrying the palette as
+   *   custom properties (--lyrics-color-active / -inactive / -passed /
+   *   -background), a "Lyrics preview" heading, a snippet of
+   *   div[data-testid="lyrics-line"] rows (each row's text lives in its own
+   *   inner div; empty rows are instrumental gaps, not missing data), and a
+   *   "Show more" button that opens the fullscreen view with ALL lines.
+   * - Fullscreen: a page-level overlay holding its own copies of the same
+   *   lyrics-line rows. Detected by role + line count (below), never by class.
+   *
+   * Active-line tracking, in priority order (first hit wins):
+   *   1. Explicit markup: aria-current / data-active / aria-selected on a row.
+   *   2. Freshness: the most recently mutated row in the watcher batch (when
+   *      the active line advances, Spotify touches the old + new rows — the
+   *      newest touch is the incoming line).
+   *   3. Brightness: a row whose computed color matches --lyrics-color-active.
+   *      (Weak on its own: passed lines can share the bright color, so this
+   *      only ever confirms, and only when exactly one row is bright.)
+   *   4. None (-1): an honest "unknown" beats a wrong highlight.
+   *
+   * Our fullscreen veils Spotify's (inline visibility, layout kept) and paints
+   * opaque above it, so any z-index Spotify uses is irrelevant. Closing ours
+   * always closes Spotify's too (its own close button, else synthetic Escape).
+   */
+
+  var LYRICS = {
+    section: "lyrics-npv-section",
+    line: "lyrics-line",
+    showMore: [
+      "show more",
+      "mostrar m\u00e1s",
+      "afficher plus",
+      "mehr anzeigen",
+      "mostra di pi\u00f9",
+      "meer weergeven",
+    ],
+    showLess: [
+      "show less",
+      "mostrar menos",
+      "afficher moins",
+      "weniger anzeigen",
+      "mostra di meno",
+      "minder weergeven",
+    ],
+    closeLabels: [
+      "close",
+      "dismiss",
+      "back",
+      "cerrar",
+      "fermer",
+      "schlie\u00dfen",
+      "chiudi",
+      "sluiten",
+    ],
+  };
+
+  var LYRICS_COLOR_DEFAULTS = {
+    active: "rgba(255, 255, 255, 1)",
+    inactive: "rgba(255, 255, 255, 0.5)",
+    passed: "rgba(255, 255, 255, 0.65)",
+    background: "rgba(18, 18, 18, 1)",
+  };
+
+  function findLyricsSection() {
+    var nodes = [];
+    try {
+      nodes = Array.prototype.slice.call(
+        document.querySelectorAll('[data-testid="' + LYRICS.section + '"]')
+      );
+    } catch (e) {
+      nodes = [];
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      if (isInOurRoot(nodes[i])) continue;
+      if (isHiddenAttr(nodes[i])) continue;
+      return nodes[i];
+    }
+    return null;
+  }
+
+  // hidden attribute / display:none only — deliberately NOT visibility (the
+  // veil hides Spotify's fullscreen that way while it stays "open").
+  function isHiddenAttr(el) {
+    try {
+      if (!el) return true;
+      if (el.hidden) return true;
+      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
+      if (cs && cs.display === "none") return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function readLyricsColors(section) {
+    var out = {
+      active: LYRICS_COLOR_DEFAULTS.active,
+      inactive: LYRICS_COLOR_DEFAULTS.inactive,
+      passed: LYRICS_COLOR_DEFAULTS.passed,
+      background: LYRICS_COLOR_DEFAULTS.background,
+    };
+    if (!section) return out;
+    try {
+      var cs = window.getComputedStyle ? window.getComputedStyle(section) : null;
+      if (!cs) return out;
+      var names = ["active", "inactive", "passed", "background"];
+      for (var i = 0; i < names.length; i++) {
+        var v = "";
+        try {
+          v = cs.getPropertyValue("--lyrics-color-" + names[i]) || "";
+        } catch (e) {}
+        v = String(v || "").trim();
+        if (v) out[names[i]] = v;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function lyricsLineText(lineEl) {
+    if (!lineEl) return "";
+    try {
+      // Text lives in the row's own inner div; the row itself carries no
+      // other prose, so its trimmed text is the lyric ("" = gap).
+      return ((lineEl.textContent || "").replace(/\s+/g, " ")).trim();
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function lyricsLineIndex(el, lines) {
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i] === el) return i;
+    }
+    return -1;
+  }
+
+  function parseRgb(s) {
+    var m = String(s || "").match(/rgba?\s*\(\s*([^)]+)\)/i);
+    if (!m) return null;
+    var parts = m[1].split(",");
+    if (parts.length < 3) return null;
+    var n = [];
+    for (var i = 0; i < 3; i++) {
+      var v = parseFloat(parts[i]);
+      if (!isFinite(v)) return null;
+      n.push(Math.round(v));
+    }
+    var a = parts.length > 3 ? parseFloat(parts[3]) : 1;
+    if (!isFinite(a)) a = 1;
+    return { r: n[0], g: n[1], b: n[2], a: a };
+  }
+
+  function sameColor(a, b) {
+    var pa = parseRgb(a);
+    var pb = parseRgb(b);
+    if (!pa || !pb) return false;
+    return (
+      pa.r === pb.r && pa.g === pb.g && pa.b === pb.b && Math.abs(pa.a - pb.a) < 0.05
+    );
+  }
+
+  // Rows of one scope (preview section or fullscreen root), DOM order.
+  // Never touches our own root.
+  function readLyricsLines(scope) {
+    var out = [];
+    if (!scope || !scope.querySelectorAll) return out;
+    var nodes = [];
+    try {
+      nodes = Array.prototype.slice.call(
+        scope.querySelectorAll('[data-testid="' + LYRICS.line + '"]')
+      );
+    } catch (e) {
+      nodes = [];
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      if (isInOurRoot(nodes[i])) continue;
+      out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function lyricsExplicitActive(lineEls) {
+    for (var i = 0; i < lineEls.length; i++) {
+      var b = lineEls[i];
+      try {
+        if (b.getAttribute("aria-current") !== null) return i;
+        var da = b.getAttribute("data-active");
+        if (da !== null && da !== "false") return i;
+        if (b.getAttribute("aria-selected") === "true") return i;
+      } catch (e) {}
+    }
+    return -1;
+  }
+
+  // Fullscreen root: prefer a dialog holding lyric rows; else the deepest
+  // non-body container holding strictly MORE rows than the preview snippet
+  // (the fullscreen view carries ALL lines; the preview a handful). Never our
+  // root, never the preview section itself.
+  function findLyricsFullscreen(previewCount) {
+    var dialogs = [];
+    try {
+      dialogs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"]'));
+    } catch (e) {
+      dialogs = [];
+    }
+    for (var d = 0; d < dialogs.length; d++) {
+      if (isInOurRoot(dialogs[d])) continue;
+      if (isHiddenAttr(dialogs[d])) continue;
+      var rows = [];
+      try {
+        rows = dialogs[d].querySelectorAll('[data-testid="' + LYRICS.line + '"]');
+      } catch (e2) {}
+      if (rows && rows.length) return dialogs[d];
+    }
+    var lines = [];
+    try {
+      lines = Array.prototype.slice.call(
+        document.querySelectorAll('[data-testid="' + LYRICS.line + '"]')
+      ).filter(function (el) {
+        if (isInOurRoot(el)) return false;
+        if (isHiddenAttr(el)) return false;
+        try {
+          // Rows orphaned inside a hidden container (a closed fullscreen
+          // whose rows were never cleared) are not an open view.
+          if (el.closest && el.closest("[hidden]")) return false;
+          if (el.closest && el.closest('[data-testid="' + LYRICS.section + '"]')) return false;
+        } catch (e3) {}
+        return true;
+      });
+    } catch (e4) {
+      lines = [];
+    }
+    if (!lines.length) return null;
+    if (previewCount && lines.length <= previewCount) return null;
+    // Deepest common container that is not the document body itself.
+    var scope = lines[0];
+    try {
+      while (scope && scope.parentElement) {
+        var parent = scope.parentElement;
+        if (!parent || parent === document.body || parent === document.documentElement) break;
+        var allInside = true;
+        for (var i = 1; i < lines.length; i++) {
+          if (!parent.contains(lines[i])) {
+            allInside = false;
+            break;
+          }
+        }
+        if (!allInside) break;
+        scope = parent;
+      }
+    } catch (e5) {}
+    if (!scope || scope === document.body || scope === document.documentElement) return null;
+    if (isInOurRoot(scope)) return null;
+    return scope;
+  }
+
+  // The button usually lives inside the section footer, but on some builds it
+  // renders as a sibling (panel footer outside the section node), so the
+  // search covers the section subtree first, then the section's parent
+  // subtree. Hidden/disabled controls are never returned: clicking one is a
+  // guaranteed no-op that would only burn a 3s open timeout.
+  function findLyricsShowMore(section) {
+    var scopes = [];
+    if (section) scopes.push(section);
+    try {
+      if (section && section.parentElement) scopes.push(section.parentElement);
+    } catch (e0) {}
+    for (var s = 0; s < scopes.length; s++) {
+      var scope = scopes[s];
+      if (!scope || !scope.querySelectorAll) continue;
+      var btns = [];
+      try {
+        btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+      } catch (e) {
+        btns = [];
+      }
+      for (var i = 0; i < btns.length; i++) {
+        if (isInOurRoot(btns[i])) continue;
+        var t = "";
+        var lab = "";
+        var dis = false;
+        try {
+          t = norm(btns[i].textContent).slice(0, 40);
+          lab = norm(btns[i].getAttribute("label") || "");
+          dis = btns[i].disabled || btns[i].getAttribute("aria-disabled") === "true";
+        } catch (e2) {}
+        if (dis) continue;
+        var match = false;
+        for (var m = 0; m < LYRICS.showMore.length; m++) {
+          if (t.indexOf(LYRICS.showMore[m]) !== -1 || (lab && lab.indexOf(LYRICS.showMore[m]) !== -1)) {
+            match = true;
+            break;
+          }
+        }
+        if (!match) continue;
+        try {
+          if (isHiddenAttr(btns[i]) || !isVisible(btns[i])) continue;
+        } catch (e3) {}
+        return btns[i];
+      }
+    }
+    return null;
+  }
+
+  function findLyricsClose(scope) {
+    if (!scope || !scope.querySelectorAll) return null;
+    var btns = [];
+    try {
+      btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+    } catch (e) {
+      btns = [];
+    }
+    for (var i = 0; i < btns.length; i++) {
+      if (isInOurRoot(btns[i])) continue;
+      var label = "";
+      var tid = "";
+      try {
+        label = norm(btns[i].getAttribute("aria-label") || "");
+        tid = norm(btns[i].getAttribute("data-testid") || "");
+      } catch (e2) {}
+      if (tid.indexOf("close") !== -1) return btns[i];
+      for (var c = 0; c < LYRICS.closeLabels.length; c++) {
+        if (label && label.indexOf(LYRICS.closeLabels[c]) !== -1) return btns[i];
+      }
+    }
+    return null;
+  }
+
+  function isLyricsFullscreenOpen() {
+    try {
+      var section = findLyricsSection();
+      var previewCount = 0;
+      try {
+        previewCount = readLyricsLines(section).length;
+      } catch (e) {}
+      return !!findLyricsFullscreen(previewCount);
+    } catch (e2) {
+      return false;
+    }
+  }
+
+  var lyricsVeilTarget = null;
+
+  // Visible-only Show less (the collapse half of an inline expansion).
+  // Same scoping as Show more; hidden controls are never returned.
+  function findLyricsShowLess(section) {
+    var scopes = [];
+    if (section) scopes.push(section);
+    try {
+      if (section && section.parentElement) scopes.push(section.parentElement);
+    } catch (e0) {}
+    for (var s = 0; s < scopes.length; s++) {
+      var scope = scopes[s];
+      if (!scope || !scope.querySelectorAll) continue;
+      var btns = [];
+      try {
+        btns = Array.prototype.slice.call(scope.querySelectorAll("button"));
+      } catch (e) {
+        btns = [];
+      }
+      for (var i = 0; i < btns.length; i++) {
+        if (isInOurRoot(btns[i])) continue;
+        var t = "";
+        try {
+          t = norm(btns[i].textContent).slice(0, 40);
+        } catch (e2) {}
+        var match = false;
+        for (var m = 0; m < LYRICS.showLess.length; m++) {
+          if (t.indexOf(LYRICS.showLess[m]) !== -1) {
+            match = true;
+            break;
+          }
+        }
+        if (!match) continue;
+        try {
+          if (isHiddenAttr(btns[i]) || !isVisible(btns[i])) continue;
+        } catch (e3) {}
+        return btns[i];
+      }
+    }
+    return null;
+  }
+
+  // Best-effort collapse of an inline expansion back to the snippet.
+  // Currently UNUSED by any flow (kept for diagnostics/manual use): flips
+  // only flow while Spotify's live view exists, so auto-collapsing on close
+  // would silence the very feed our UI mirrors. Do not rewire it into close
+  // paths without re-reading that tradeoff.
+  function collapseLyricsInline() {
+    var section = null;
+    try {
+      section = findLyricsSection();
+    } catch (e) {
+      section = null;
+    }
+    var less = null;
+    try {
+      less = findLyricsShowLess(section);
+    } catch (e2) {
+      less = null;
+    }
+    if (!less) return Promise.resolve(false);
+    var preCount = 0;
+    try {
+      preCount = readLyricsLines(section).length;
+    } catch (e3) {}
+    userClick(less);
+    return waitFor(function () {
+      try {
+        var s2 = findLyricsSection();
+        if (!s2) return true; // whole section went away: collapsed enough
+        if (findLyricsShowMore(s2)) return true;
+        return readLyricsLines(s2).length < preCount ? true : null;
+      } catch (e4) {
+        return null;
+      }
+    }, 2000, 80).then(function (collapsed) {
+      return !!collapsed;
+    });
+  }
+
+  function lyricsVeilOn() {
+    try {
+      var section = findLyricsSection();
+      var previewCount = 0;
+      try {
+        previewCount = readLyricsLines(section).length;
+      } catch (e) {}
+      var root = findLyricsFullscreen(previewCount);
+      if (root && root.style) {
+        lyricsVeilTarget = root;
+        root.style.setProperty("visibility", "hidden", "important");
+      }
+    } catch (e2) {}
+  }
+
+  function lyricsVeilOff() {
+    try {
+      if (lyricsVeilTarget && lyricsVeilTarget.style) {
+        lyricsVeilTarget.style.removeProperty("visibility");
+      }
+    } catch (e) {}
+    lyricsVeilTarget = null;
+  }
+
+  // Lyrics warmup: if the song is PLAYING but the collapsed snippet never
+  // resolves an active line (engine not primed — flips only start flowing
+  // after Spotify's view opens once), open + close it once per track to
+  // prime it, then leave it open: closing again would silence the feed just
+  // started. A resolved-but-frozen
+  // line gets a longer leash (long verses sit still legitimately); an
+  // unresolvable one warms sooner. Skipped while paused (nothing advances
+  // anyway), while any sheet read is in flight, while a fullscreen is
+  // already open, and once warmed. Runs from the existing fallback tick.
+  // Forced freshness pass, called on player track changes (see ui.js render
+  // hook). Lyrics mutations alone cannot announce a new song: if Spotify
+  // does not touch its lyrics DOM on the switch, no watcher batch ever fires
+  // and both views would strand the old song forever. This re-baselines the
+  // warm window for the new key, forces one sync re-read (catching remounts
+  // the observer may have missed), and lets the normal warmup path prime a
+  // cold section from there. Cheap and idempotent.
+  function refreshLyrics() {
+    var key = "";
+    try {
+      key = trackKeyNow();
+    } catch (e) {
+      key = "";
+    }
+    if (!key || key === " | ") return;
+    if (lyricsWarm.key !== key) {
+      lyricsWarm = { key: key, since: Date.now(), seenAt: Date.now(), active: null };
+    }
+    try {
+      deliverLyrics();
+    } catch (e2) {}
+    try {
+      lyricsWarmCheck();
+    } catch (e3) {}
+    // Live-observed (Oct 2026): after Next, Spotify tears the lyrics section
+    // down for ~3s before mounting the new song's rows. A single sync
+    // re-read during that window delivers unavailable, and if the rebuild
+    // batch is ever missed the mirror strands the old song until the next
+    // context change. Re-read twice more on a short fuse, guarded by key so
+    // a further skip never paints stale rows. deliverLyrics is sig-deduped,
+    // so quiet re-reads notify nobody.
+    try {
+      if (refreshLyricsTimers.length) {
+        for (var rt = 0; rt < refreshLyricsTimers.length; rt++) {
+          window.clearTimeout(refreshLyricsTimers[rt]);
+        }
+      }
+      refreshLyricsTimers = [1500, 4000].map(function (ms) {
+        return window.setTimeout(function () {
+          try {
+            var kNow = trackKeyNow();
+            if (kNow !== key) return;
+            deliverLyrics();
+            lyricsWarmCheck();
+          } catch (eRT) {}
+        }, ms);
+      });
+    } catch (e4) {}
+  }
+
+  function lyricsWarmCheck() {
+    try {
+      if (typeof document.hidden === "boolean" && document.hidden) return;
+      if (isLyricsFullscreenOpen()) return;
+      if (deviceBusy || playlistBusy) return;
+      var playing = false;
+      try {
+        playing = isPlaying();
+      } catch (e0) {}
+      if (!playing) return;
+      var section = null;
+      try {
+        section = findLyricsSection();
+      } catch (e1) {}
+      if (!section) return;
+      var more = null;
+      try {
+        more = findLyricsShowMore(section);
+      } catch (e2) {}
+      if (!more) return; // already expanded (or none): nothing to prime
+      var key = "";
+      try {
+        key = trackKeyNow();
+      } catch (e3) {}
+      if (!key || key === " | ") return;
+      var now = Date.now();
+      if (lyricsWarm.key !== key) {
+        // No baseline yet (frozen from the first second — no deliveries to
+        // seed from). Start the window now rather than deadlocking.
+        lyricsWarm = { key: key, since: now, seenAt: now, active: null };
+      }
+      if (lyricsWarmedKeys.indexOf(key) !== -1) return;
+      var cur = null;
+      try {
+        cur = getLyricsState();
+      } catch (eC) {
+        return;
+      }
+      if (!cur || !cur.available) return;
+      var curActive = cur.active;
+      var needsWarm = false;
+      if (curActive === -1) {
+        // Nothing ever resolved: warm past a grace period (intros are -1
+        // legitimately for a few seconds).
+        needsWarm = now - lyricsWarm.since > 10000;
+      } else {
+        // Resolved but never moves: only after a long quiet stretch, so a
+        // long verse doesn't trigger it.
+        needsWarm = now - lyricsWarm.seenAt > 20000;
+      }
+      if (!needsWarm) return;
+      lyricsWarmedKeys.push(key);
+      if (lyricsWarmedKeys.length > 30) lyricsWarmedKeys.shift();
+      lyricsLogEvent("warm-start", key);
+      openLyricsFullscreen().then(function (res) {
+        lyricsLogEvent("warm-opened", res && res.ok ? "ok-left-open" : (res && res.reason) || "fail");
+        lyricsLogEvent("warm-done", key);
+      }).catch(function () {});
+    } catch (e4) {}
+  }
+
+  function openLyricsFullscreen() {
+    var section = null;
+    try {
+      section = findLyricsSection();
+    } catch (e) {
+      section = null;
+    }
+    if (!section) {
+      // NPV panel closed: open it the Spotify way, then look again.
+      try {
+        if (findSideButton("lyrics")) userClick(findSideButton("lyrics"));
+      } catch (e2) {}
+      return waitFor(function () {
+        try {
+          return findLyricsSection() ? true : null;
+        } catch (e3) {
+          return null;
+        }
+      }, 2500, 80).then(function (found) {
+        if (!found) {
+          lyricsLogEvent("open-fail", "lyrics-unavailable");
+          return { ok: false, reason: "lyrics-unavailable" };
+        }
+        return openLyricsFullscreen();
+      });
+    }
+    if (isLyricsFullscreenOpen()) {
+      lyricsVeilOn();
+      lyricsLogEvent("open-ok", "already-open");
+      return Promise.resolve({ ok: true, opened: false });
+    }
+    var more = null;
+    try {
+      more = findLyricsShowMore(section);
+    } catch (e4) {
+      more = null;
+    }
+    if (!more) {
+      // No trigger — but the snippet itself may already hold the full list:
+      // a previous open can leave it expanded (all lines, Show more gone),
+      // and short lyrics never grow one at all. Nothing to drive then.
+      var preCount = 0;
+      try {
+        preCount = readLyricsLines(section).length;
+      } catch (e6) {}
+      if (preCount > 0) {
+        lyricsLogEvent("open-ok", "section-expanded");
+        return Promise.resolve({ ok: true, opened: false });
+      }
+      lyricsLogEvent("open-fail", "lyrics-unavailable");
+      return Promise.resolve({ ok: false, reason: "lyrics-unavailable" });
+    }
+    var preClickCount = 0;
+    try {
+      preClickCount = readLyricsLines(section).length;
+    } catch (e7) {}
+    userClick(more);
+    // Either an overlay appears (dialog path) or the snippet grows in place
+    // (inline path) — whichever lands first wins, so inline opens resolve in
+    // ~one poll instead of eating the whole overlay timeout. Inline counts
+    // only once the trigger itself is gone (a bare row-count wobble from lazy
+    // loading must not pass as an expansion).
+    var grew = false;
+    return waitFor(function () {
+      try {
+        if (isLyricsFullscreenOpen()) return "overlay";
+      } catch (e5) {}
+      try {
+        var sNow = findLyricsSection();
+        if (sNow && readLyricsLines(sNow).length > preClickCount && !findLyricsShowMore(sNow)) {
+          grew = true;
+          return "inline";
+        }
+      } catch (e9) {}
+      return null;
+    }, 3000, 80).then(function (how) {
+      if (how === "overlay") {
+        lyricsVeilOn();
+        lyricsLogEvent("open-ok", "opened:true");
+        return { ok: true, opened: true };
+      }
+      if (how === "inline" || grew) {
+        // The click expanded the section in place: the grown snippet IS the
+        // full source by another route. It stays expanded — flips only flow
+        // while Spotify's live view exists (proven by device trace), so
+        // collapsing here would silence the feed our UI mirrors.
+        lyricsLogEvent("open-ok", "section-expanded-inline");
+        return { ok: true, opened: false };
+      }
+      lyricsLogEvent("open-fail", "lyrics-fullscreen-unavailable");
+      return { ok: false, reason: "lyrics-fullscreen-unavailable" };
+    });
+  }
+
+  function closeLyricsFullscreen() {
+    // No overlay open: nothing to close. An inline expansion is deliberately
+    // LEFT in place — flips only flow while Spotify's live view exists, so
+    // collapsing it would silence the feed (and the minified preview with
+    // it). See collapseLyricsInline before rewiring this.
+    if (!isLyricsFullscreenOpen()) {
+      lyricsVeilOff();
+      return Promise.resolve({ ok: true, noop: true });
+    }
+    var closer = null;
+    try {
+      var section = findLyricsSection();
+      var previewCount = 0;
+      try {
+        previewCount = readLyricsLines(section).length;
+      } catch (e) {}
+      closer = findLyricsClose(findLyricsFullscreen(previewCount));
+    } catch (e2) {
+      closer = null;
+    }
+    if (closer) userClick(closer);
+    else {
+      // No identifiable close control: synthetic Escape. Marked so our own
+      // sheets (document-level Escape-to-close) never treat it as the user.
+      try {
+        var ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+        ev.__spmSynthetic = true;
+        document.dispatchEvent(ev);
+      } catch (e3) {}
+    }
+    return waitFor(function () {
+      try {
+        return isLyricsFullscreenOpen() ? null : true;
+      } catch (e4) {
+        return null;
+      }
+    }, 2000, 80).then(function (closed) {
+      lyricsVeilOff();
+      if (closed) {
+        lyricsLogEvent("close-ok", closer ? "button" : "escape");
+        return { ok: true };
+      }
+      lyricsLogEvent("close-fail", "lyrics-close-unconfirmed");
+      return { ok: false, reason: "lyrics-close-unconfirmed" };
+    });
+  }
+
+  // Freshness hint: the most recently mutated lyric row (the watcher records
+  // it per batch). When the active line advances, Spotify touches the old +
+  // new rows — the newest touch is the incoming line. Only ever a fallback
+  // behind explicit markup, and only inside the lines it was taken from.
+  var lyricsHint = { el: null, at: 0 };
+
+  // Freshness per lyrics scope: last mutation timestamp for section vs
+  // overlay rows. When both copies are alive but disagree (stale snippet vs
+  // live overlay after a track change, or vice versa), the most recently
+  // touched one wins for BOTH views — mini and fullscreen can then never
+  // show different songs. Updated for every line-touching mutation, not just
+  // delivered flips.
+  var lyricsFresh = { section: 0, overlay: 0 };
+
+  function lyricsScopeOf(el) {
+    try {
+      if (el && el.closest && el.closest('[data-testid="' + LYRICS.section + '"]')) {
+        return "section";
+      }
+    } catch (e) {}
+    return "overlay";
+  }
+
+  function linesAgree(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if ((a[i] && a[i].text) !== (b[i] && b[i].text)) return false;
+    }
+    return true;
+  }
+
+  function readLyricsScope(scope, colors) {
+    var els = readLyricsLines(scope);
+    var lines = [];
+    for (var i = 0; i < els.length; i++) {
+      lines.push({ text: lyricsLineText(els[i]), active: false });
+    }
+    var active = lyricsExplicitActive(els);
+    if (active === -1 && lyricsHint.el) {
+      try {
+        if (document.contains(lyricsHint.el)) {
+          var hi = lyricsLineIndex(lyricsHint.el, els);
+          if (hi !== -1) active = hi;
+        }
+      } catch (e) {}
+    }
+    if (active === -1 && colors) {
+      // Brightness confirmation only: exactly one bright row may claim it.
+      // Live-observed (open.spotify.com, Oct 2026): the active line advances
+      // by NODE REPLACEMENT (old rows removed, new rows mounted with the new
+      // roles), never by an aria/class mutation on the existing rows — so the
+      // freshness hint below is often stale and brightness is the real signal.
+      // Passed rows are DIMMED (opacity ~0.5) while active/upcoming are opaque
+      // (~1.0), and passed rows can share the bright color itself — so when
+      // several rows are bright, only a uniquely-bright OPAQUE row may claim
+      // it. Opacity comes from computed style (never class names).
+      var bright = -1;
+      var brightCount = 0;
+      var opaqueBright = -1;
+      var opaqueBrightCount = 0;
+      for (var b = 0; b < els.length; b++) {
+        var col = "";
+        var op = 1;
+        try {
+          if (window.getComputedStyle) {
+            var csb = window.getComputedStyle(els[b]);
+            col = csb.color || "";
+            var opRaw = csb.opacity;
+            if (opRaw !== "" && opRaw !== null && opRaw !== undefined) {
+              var opNum = parseFloat(opRaw);
+              if (isFinite(opNum)) op = opNum;
+            }
+          }
+        } catch (e2) {}
+        if (col && sameColor(col, colors.active)) {
+          bright = b;
+          brightCount++;
+          if (op > 0.75) {
+            opaqueBright = b;
+            opaqueBrightCount++;
+          }
+        }
+      }
+      if (brightCount === 1) active = bright;
+      else if (opaqueBrightCount === 1) active = opaqueBright;
+    }
+    if (active !== -1 && lines[active]) lines[active].active = true;
+    return { els: els, lines: lines, active: active };
+  }
+
+  function getLyricsState() {
+    var none = {
+      available: false,
+      trackKey: "",
+      preview: [],
+      full: [],
+      active: -1,
+      colors: Object.assign({}, LYRICS_COLOR_DEFAULTS),
+      fullscreenOpen: false,
+      hasMore: false,
+    };
+    var keyNow = "";
+    try {
+      keyNow = trackKeyNow();
+    } catch (e) {}
+    var section = null;
+    try {
+      section = findLyricsSection();
+    } catch (e2) {
+      section = null;
+    }
+    var previewCount = 0;
+    var colors = Object.assign({}, LYRICS_COLOR_DEFAULTS);
+    var preview = { els: [], lines: [], active: -1 };
+    if (section) {
+      colors = readLyricsColors(section);
+      preview = readLyricsScope(section, colors);
+      previewCount = preview.els.length;
+    }
+    var fsRoot = null;
+    try {
+      fsRoot = findLyricsFullscreen(previewCount);
+    } catch (e3) {
+      fsRoot = null;
+    }
+    // Spotify may tear down (or hide) the preview section once its own
+    // fullscreen opens — the fullscreen copy is then the ONLY source. A
+    // missing section with an open fullscreen is still fully available.
+    if (!section && !fsRoot) {
+      none.trackKey = keyNow;
+      return none;
+    }
+    var full = { els: [], lines: [], active: -1 };
+    if (fsRoot) {
+      try {
+        full = readLyricsScope(fsRoot, colors);
+      } catch (e4) {}
+    }
+    var hasMore = false;
+    try {
+      hasMore = !!findLyricsShowMore(section);
+    } catch (e5) {}
+    // Single source of truth: when both copies are alive they can still
+    // disagree (stale snippet vs live overlay after a track change, or vice
+    // versa) — and serving one view from each is exactly how the mini freezes
+    // while fullscreen tracks. The most recently mutated copy wins for BOTH
+    // views. Ties (and the all-agree common case) keep today's behavior:
+    // overlay when open, else the section.
+    var sectionOk = preview.lines.length > 0;
+    var overlayOk = !!(fsRoot && full.lines.length > 0);
+    var useOverlay = false;
+    if (overlayOk && sectionOk) {
+      useOverlay = linesAgree(preview.lines, full.lines)
+        ? true
+        : lyricsFresh.overlay >= lyricsFresh.section;
+    } else {
+      useOverlay = overlayOk;
+    }
+    var chosen = useOverlay ? full : preview;
+    return {
+      available: true,
+      trackKey: keyNow,
+      preview: chosen.lines,
+      full: useOverlay ? chosen.lines : [],
+      active: chosen.active,
+      colors: colors,
+      fullscreenOpen: !!fsRoot,
+      hasMore: hasMore,
+      scope: useOverlay ? "overlay" : (section ? "section" : "none"),
+    };
+  }
+
+  var lyricsSubs = [];
+  var lyricsObserver = null;
+  var lyricsObserverStarted = false;
+  var lastLyricsSig = "";
+
+  // Flight recorder: last 40 lyrics transitions (deliveries + open/close
+  // outcomes). When the fullscreen blanks on-device, a paste of
+  // inspectLyrics() right after shows the exact sequence instead of a guess.
+  var lyricsLog = [];
+  function lyricsLogEvent(ev, info) {
+    try {
+      lyricsLog.push({ t: Date.now(), ev: ev, info: info || "" });
+      if (lyricsLog.length > 40) lyricsLog.splice(0, lyricsLog.length - 40);
+      // Opt-in live trace: localStorage.spm-debug-lyrics === "1" (same
+      // storage both worlds see, so it toggles from any console without a
+      // reload). Off by default: zero cost, zero console spam.
+      var dbg = false;
+      try {
+        dbg = window.localStorage && window.localStorage.getItem("spm-debug-lyrics") === "1";
+      } catch (eDbg) {}
+      if (dbg) {
+        try {
+          console.info("[spm][lyrics]", ev, info || "");
+        } catch (eLog) {}
+      }
+    } catch (e) {}
+  }
+
+  // Warmup bookkeeping: per-track first-seen, last-delivery, and last
+  // resolved active line. A frozen active that merely re-resolves is NOT
+  // liveness — only transitions and fresh deliveries count.
+  var lyricsWarm = { key: "", since: 0, seenAt: 0, active: null };
+  var lyricsWarmedKeys = [];
+  // Pending delayed re-reads scheduled by refreshLyrics (cleared on reschedule).
+  var refreshLyricsTimers = [];
+
+  function lyricsSig(st) {
+    var n = 0;
+    var lens = 0;
+    var list = (st.full && st.full.length ? st.full : st.preview) || [];
+    for (var i = 0; i < list.length; i++) {
+      n++;
+      lens += (list[i].text || "").length;
+    }
+    return (st.trackKey || "") + "|" + (st.fullscreenOpen ? "F" : "P") + "|" +
+      st.active + "|" + n + "|" + lens;
+  }
+
+  function deliverLyrics() {
+    var st = null;
+    try {
+      st = getLyricsState();
+    } catch (e) {
+      return;
+    }
+    var sig = lyricsSig(st);
+    if (sig === lastLyricsSig) return;
+    lastLyricsSig = sig;
+    lyricsLogEvent("deliver", sig);
+    // Liveness accounting for the warmup below: new track resets the
+    // window; every delivery refreshes it; only a resolved active line is
+    // remembered (a frozen one re-resolving proves nothing).
+    try {
+      var wk = st.trackKey || "";
+      var nowW = Date.now();
+      if (lyricsWarm.key !== wk) {
+        lyricsWarm = { key: wk, since: nowW, seenAt: nowW, active: null };
+      } else {
+        lyricsWarm.seenAt = nowW;
+      }
+      if (st.active >= 0) lyricsWarm.active = st.active;
+    } catch (eW) {}
+    for (var i = 0; i < lyricsSubs.length; i++) {
+      try {
+        lyricsSubs[i](st);
+      } catch (e2) {
+        reportSubscriberError(e2);
+      }
+    }
+  }
+
+  function lyricsBatch(mutations) {
+    // Cheap pre-filter FIRST: this observer sees every class/childList change
+    // on the page, and a full lyrics read per storm would repeat the exact
+    // overhead pattern the snapshot observer was just fixed for. Bail unless
+    // a mutation plausibly touches lyric rows.
+    // Live-observed (Oct 2026): active advances arrive as NODE REPLACEMENTS
+    // (container target, new row nodes in addedNodes), and around a track
+    // change the page is busy — so the scan covers the WHOLE batch (batches
+    // are small; the old 50-cap could bury the lyrics mutations behind player
+    // churn and strand the old song).
+    var plausible = false;
+    var scan = mutations.length;
+    for (var s = 0; s < scan; s++) {
+      var sm = mutations[s];
+      var st = sm.target;
+      if (st) {
+        try {
+          if (st.getAttribute && st.getAttribute("data-testid") === LYRICS.line) {
+            plausible = true;
+            break;
+          }
+          if (st.getAttribute && st.getAttribute("data-testid") === LYRICS.section) {
+            plausible = true;
+            break;
+          }
+          if (st.closest && st.closest('[data-testid="' + LYRICS.line + '"],[data-testid="' + LYRICS.section + '"]')) {
+            plausible = true;
+            break;
+          }
+        } catch (e0) {}
+      }
+      // Row (re)mounts target the container — the rows arrive as added (or
+      // leave as removed) nodes instead. Wrappers mount whole (the added node
+      // is the snippet container, not a row), so also peek one level down.
+      if (sm.type === "childList") {
+        var lists = [sm.addedNodes, sm.removedNodes];
+        for (var l = 0; l < 2 && !plausible; l++) {
+          var nl = lists[l];
+          if (!nl) continue;
+          for (var n = 0; n < Math.min(nl.length, 5); n++) {
+            var nd = nl[n];
+            try {
+              if (!nd || !nd.getAttribute) continue;
+              if (nd.getAttribute("data-testid") === LYRICS.line) {
+                plausible = true;
+                break;
+              }
+              if (nd.querySelector && nd.querySelector(
+                '[data-testid="' + LYRICS.line + '"],[data-testid="' + LYRICS.section + '"]'
+              )) {
+                plausible = true;
+                break;
+              }
+            } catch (e1) {}
+          }
+        }
+        if (plausible) break;
+      }
+    }
+    if (!plausible) return;
+    var touched = null;
+    var addedLines = [];
+    for (var i = 0; i < mutations.length; i++) {
+      var m = mutations[i];
+      if (m.type !== "attributes" && m.type !== "childList") continue;
+      var t = m.target;
+      if (!t) continue;
+      // Line flip (class/aria swap on a row) or snippet (re)mount. Scope is
+      // stamped per touch (not just the newest) so the scope choice below
+      // sees every live copy, even ones the hint itself doesn't name.
+      var line = null;
+      try {
+        if (t.getAttribute && t.getAttribute("data-testid") === LYRICS.line) line = t;
+        else if (t.closest) line = t.closest('[data-testid="' + LYRICS.line + '"]');
+      } catch (e2) {}
+      if (line && !isInOurRoot(line)) {
+        touched = line; // newest touch in the batch wins the hint
+        try {
+          lyricsFresh[lyricsScopeOf(line)] = Date.now();
+        } catch (eS) {}
+        continue;
+      }
+      // Mounts whose rows arrive as added nodes (target is the container).
+      if (m.type === "childList" && m.addedNodes) {
+        try {
+          for (var a = 0; a < Math.min(m.addedNodes.length, 5); a++) {
+            var an = m.addedNodes[a];
+            if (!an || !an.getAttribute) continue;
+            var isLine = an.getAttribute("data-testid") === LYRICS.line;
+            var hasLines = !isLine && an.querySelector &&
+              an.querySelector('[data-testid="' + LYRICS.line + '"]');
+            if (!(isLine || hasLines) || isInOurRoot(an)) continue;
+            // The node itself may sit inside the section (snippet mounts) or
+            // outside it (overlay mounts) — classify by position, not guess.
+            var mountScope = "overlay";
+            try {
+              if (an.closest && an.closest('[data-testid="' + LYRICS.section + '"]')) {
+                mountScope = "section";
+              }
+            } catch (eS2) {}
+            try {
+              lyricsFresh[mountScope] = Date.now();
+            } catch (eS3) {}
+            // Remember directly-added rows for the hint below (bounded:
+            // remounts can add dozens; the bright check after the loop caps
+            // its own reads too).
+            if (isLine && addedLines.length < 10) addedLines.push(an);
+            break;
+          }
+        } catch (e5) {}
+      }
+    }
+    // Replacement-driven advance with no in-place touch (live pattern):
+    // resolve the hint from the newly-mounted rows themselves. Exactly one
+    // newly-mounted bright row identifies the incoming active line; zero
+    // (intro) or several (bulk remount resolving ambiguously) leave the hint
+    // alone and brightness at read time decides.
+    var addedBright = [];
+    if (!touched && addedLines.length) {
+      var hintColors = null;
+      try {
+        hintColors = readLyricsColors(findLyricsSection());
+      } catch (eHC) {
+        hintColors = null;
+      }
+      if (hintColors) {
+        for (var hb = 0; hb < addedLines.length && addedBright.length < 2; hb++) {
+          try {
+            var hcol = window.getComputedStyle ? window.getComputedStyle(addedLines[hb]).color : "";
+            if (hcol && sameColor(hcol, hintColors.active)) addedBright.push(addedLines[hb]);
+          } catch (eHB) {}
+        }
+      }
+    }
+    if (touched) {
+      lyricsHint = { el: touched, at: Date.now() };
+    } else if (addedBright.length === 1) {
+      // Replacement-driven advance (live pattern: container target, new rows
+      // in addedNodes): the single newly-mounted bright row is the incoming
+      // active line. Seeding the hint from it keeps tracking alive even when
+      // brightness at read time is ever ambiguous.
+      lyricsHint = { el: addedBright[0], at: Date.now() };
+    }
+    // Re-assert the veil: React may replace the veiled node mid-session.
+    try {
+      if (lyricsVeilTarget) {
+        if (!document.contains(lyricsVeilTarget)) {
+          lyricsVeilTarget = null;
+          lyricsVeilOn();
+        } else if (lyricsVeilTarget.style.getPropertyValue("visibility") !== "hidden") {
+          lyricsVeilTarget.style.setProperty("visibility", "hidden", "important");
+        }
+      }
+    } catch (e4) {}
+    deliverLyrics();
+  }
+
+  function startLyricsObserver() {
+    if (lyricsObserverStarted) return;
+    lyricsObserverStarted = true;
+    try {
+      lyricsObserver = new MutationObserver(lyricsBatch);
+      lyricsObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "aria-current", "aria-selected", "data-active", "style"],
+        childList: true,
+        subtree: true,
+      });
+    } catch (e) {
+      lyricsObserver = null;
+    }
+  }
+
+  function watchLyrics(cb) {
+    if (typeof cb !== "function") return function () {};
+    startLyricsObserver();
+    lyricsSubs.push(cb);
+    return function () {
+      for (var i = lyricsSubs.length - 1; i >= 0; i--) {
+        if (lyricsSubs[i] === cb) lyricsSubs.splice(i, 1);
+      }
+    };
+  }
+
+  // Console diagnostic for the live tab: which anchors exist, what the active
+  // signal looks like, and which source our UI would use. Paste
+  // `SpotMobile.spotify.inspectLyrics()` on open.spotify.com and send the output.
+  function inspectLyrics() {
+    var section = null;
+    try {
+      section = findLyricsSection();
+    } catch (e) {}
+    var colors = readLyricsColors(section);
+    var previewEls = readLyricsLines(section);
+    var fsRoot = null;
+    try {
+      fsRoot = findLyricsFullscreen(previewEls.length);
+    } catch (e2) {}
+    var fullEls = fsRoot ? readLyricsLines(fsRoot) : [];
+    function describe(els) {
+      return els.slice(0, 12).map(function (b) {
+        var attrs = {};
+        try {
+          attrs["aria-current"] = b.getAttribute("aria-current");
+          attrs["data-active"] = b.getAttribute("data-active");
+          attrs["aria-selected"] = b.getAttribute("aria-selected");
+          attrs.class = String(b.getAttribute("class") || "").slice(0, 80);
+          attrs.color = window.getComputedStyle ? window.getComputedStyle(b).color : "";
+        } catch (e3) {}
+        return { text: lyricsLineText(b).slice(0, 60), attrs: attrs };
+      });
+    }
+    var more = null;
+    try {
+      var mb = findLyricsShowMore(section);
+      if (mb) {
+        more = {
+          text: (mb.textContent || "").trim().slice(0, 40),
+          label: mb.getAttribute("label"),
+          encore: mb.getAttribute("data-encore-id"),
+        };
+      }
+    } catch (e4) {}
+    // Every button in + around the section: identifies the real trigger when
+    // the matcher above comes back empty (wrong scope, hidden, reworded).
+    var nearbyButtons = [];
+    try {
+      var bscope = section && section.parentElement ? section.parentElement : section;
+      if (bscope && bscope.querySelectorAll) {
+        var allb = Array.prototype.slice.call(bscope.querySelectorAll("button"), 0, 20);
+        for (var bi = 0; bi < allb.length; bi++) {
+          if (isInOurRoot(allb[bi])) continue;
+          var bvis = "";
+          try {
+            bvis = "hiddenAttr=" + !!allb[bi].hidden + " display=" +
+              (window.getComputedStyle ? window.getComputedStyle(allb[bi]).display : "?");
+          } catch (e6) {}
+          nearbyButtons.push({
+            text: ((allb[bi].textContent || "").replace(/\s+/g, " ").trim()).slice(0, 40),
+            label: allb[bi].getAttribute("label"),
+            encore: allb[bi].getAttribute("data-encore-id"),
+            aria: allb[bi].getAttribute("aria-label"),
+            vis: bvis,
+          });
+        }
+      }
+    } catch (e7) {}
+    var closer = null;
+    try {
+      var cb = fsRoot ? findLyricsClose(fsRoot) : null;
+      if (cb) {
+        closer = {
+          label: cb.getAttribute("aria-label"),
+          testid: cb.getAttribute("data-testid"),
+          text: (cb.textContent || "").trim().slice(0, 40),
+        };
+      }
+    } catch (e5) {}
+    return {
+      trackKey: (function () { try { return trackKeyNow(); } catch (e) { return ""; } })(),
+      build: BUILD,
+      section: !!section,
+      colors: colors,
+      explicitActive: lyricsExplicitActive(previewEls),
+      hintActive: (function () {
+        try {
+          if (lyricsHint.el && document.contains(lyricsHint.el)) {
+            return lyricsLineIndex(lyricsHint.el, previewEls);
+          }
+        } catch (e) {}
+        return -1;
+      })(),
+      previewRows: previewEls.length,
+      preview: describe(previewEls),
+      fullscreen: !!fsRoot,
+      fullscreenRows: fullEls.length,
+      fullscreenSample: describe(fullEls),
+      showMore: more,
+      nearbyButtons: nearbyButtons,
+      closer: closer,
+      scopeFreshMsAgo: (function () {
+        try {
+          var now = Date.now();
+          return {
+            section: lyricsFresh.section ? now - lyricsFresh.section : -1,
+            overlay: lyricsFresh.overlay ? now - lyricsFresh.overlay : -1,
+          };
+        } catch (e) {
+          return {};
+        }
+      })(),
+      log: lyricsLog.slice(),
+      uiLog: (function () {
+        try {
+          var arr = window.SpotMobile && window.SpotMobile.lyricsUiLog;
+          return arr ? arr.slice(-30) : [];
+        } catch (e) {
+          return [];
+        }
+      })(),
+      state: getLyricsState(),
+    };
+  }
+
   /* ---------- Change notification ---------- */
 
   function snapshotKey(s) {
@@ -5752,6 +7023,13 @@
         stableTicks++;
         emit(false);
         var busy = !!(deviceBusy || playlistBusy);
+        // Piggyback the lyrics warmup on this existing tick (no new timers).
+        // All gating (playing? busy? fullscreen open?) lives inside the check.
+        if (!busy) {
+          try {
+            lyricsWarmCheck();
+          } catch (e3) {}
+        }
         var paused = false;
         try {
           paused = !isPlaying();
@@ -5919,6 +7197,17 @@
     inspectPlaylists: inspectPlaylists,
     getCurrentTrackUri: getCurrentTrackUri,
 
+    // Lyrics: preview snippet + fullscreen mirror with synced tracking.
+    // getLyricsState is a sync read; watchLyrics pushes updates; the open
+    // call drives Spotify's own fullscreen (veiled) and close always takes
+    // Spotify's fullscreen down with ours.
+    getLyricsState: getLyricsState,
+    watchLyrics: watchLyrics,
+    openLyricsFullscreen: openLyricsFullscreen,
+    closeLyricsFullscreen: closeLyricsFullscreen,
+    isLyricsFullscreenOpen: isLyricsFullscreenOpen,
+    inspectLyrics: inspectLyrics,
+
     // Opens the playing-from context the Spotify way: by clicking Spotify's
     // own header link (inside its React tree), so its router handles it as
     // in-app navigation. Clicking a copy of the URL from our overlay sits
@@ -6049,10 +7338,14 @@
     getCurrentTime: getCurrentTime,
     getDuration: getDuration,
     isPlaying: isPlaying,
+    // Build marker (see top of file).
+    build: BUILD,
     // Direct toggle-button mirror (instant, no snapshot debounce). The play
     // icons + halos prefer this; snapshots keep driving progress/status.
     getPlayState: getPlayState,
     watchPlayState: watchPlayState,
+    // Forced lyrics freshness pass for player track changes (see above).
+    refreshLyrics: refreshLyrics,
     isShuffleEnabled: isShuffleEnabled,
     getRepeatMode: getRepeatMode,
     isLiked: isLiked,
@@ -6078,6 +7371,37 @@
   } else {
     startObserver();
   }
+
+  // Page-context diagnostics bridge. Content scripts run in an isolated JS
+  // world, so the page console cannot see window.SpotMobile ("SpotMobile is
+  // not defined" with the default "top" context — the console's context
+  // dropdown must be switched to the extension instead). This bridge works
+  // from the page context with no switching: paste the two lines below into
+  // ANY open.spotify.com console and the report is logged there.
+  //
+  //   addEventListener("message", function handler(e) {
+  //     if (e.data && e.data.__spm === "spm-inspect-lyrics" && ("data" in e.data)) {
+  //       removeEventListener("message", handler);
+  //       console.log(e.data.data);
+  //     }
+  //   });
+  //   postMessage({ __spm: "spm-inspect-lyrics" }, "*");
+  //
+  // Requests carry no "data" key; responses do — so our own response post
+  // can never re-trigger this listener.
+  window.addEventListener("message", function (e) {
+    try {
+      if (!e || !e.data || e.data.__spm !== "spm-inspect-lyrics") return;
+      if ("data" in e.data) return;
+      var out = null;
+      try {
+        out = inspectLyrics();
+      } catch (err) {
+        out = { error: String((err && err.message) || err) };
+      }
+      window.postMessage({ __spm: "spm-inspect-lyrics", data: out }, "*");
+    } catch (err2) {}
+  });
 
   window.SpotMobile = window.SpotMobile || {};
   window.SpotMobile.spotify = spotify;

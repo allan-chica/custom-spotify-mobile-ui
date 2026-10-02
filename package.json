@@ -8,7 +8,7 @@
   },
   "scripts": {
     "serve": "node tests/serve.js",
-    "test": "npm run test:curation && npm run test:tippy && npm run test:stale && npm run test:lazy && npm run test:sheet && npm run test:fallback && npm run test:ui && npm run test:flaky",
+    "test": "npm run test:curation && npm run test:tippy && npm run test:stale && npm run test:lazy && npm run test:sheet && npm run test:fallback && npm run test:ui && npm run test:flaky && npm run test:lyrics && npm run test:lyrics-inline && npm run test:lyrics-warmup && npm run test:lyrics-divergence && npm run test:lyrics-switch",
     "test:curation": "node tests/cdp-run.js tests/real-dom-curation.html",
     "test:tippy": "node tests/cdp-run.js tests/real-dom-tippy.html",
     "test:stale": "node tests/cdp-run.js tests/real-dom-stale-popper.html",
@@ -17,6 +17,11 @@
     "test:sheet": "node tests/cdp-probe.js tests/harness.html tests/probe-sheet.js 4000",
     "test:ui": "node tests/cdp-probe.js tests/harness.html tests/probe-ui.js 4000",
     "test:flaky": "node tests/cdp-probe.js tests/harness.html tests/probe-flaky.js 4000",
+    "test:lyrics": "node tests/cdp-probe.js tests/harness.html tests/probe-lyrics.js 4000",
+    "test:lyrics-inline": "node tests/cdp-probe.js tests/harness.html tests/probe-lyrics-inline.js 4000",
+    "test:lyrics-warmup": "node tests/cdp-probe.js tests/harness.html tests/probe-lyrics-warmup.js 4000",
+    "test:lyrics-divergence": "node tests/cdp-probe.js tests/harness.html tests/probe-lyrics-divergence.js 4000",
+    "test:lyrics-switch": "node tests/cdp-probe.js tests/harness.html tests/probe-lyrics-switch.js 4000",
     "diagnose": "node -e \"console.log('Open tests/diagnose-playlists.html, then paste tests/diagnose-playlists.js into the Spotify tab console.')\""
   },
   "keywords": [],

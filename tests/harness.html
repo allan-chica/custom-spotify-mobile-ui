@@ -234,6 +234,29 @@
     </nav>
     <div id="fake-menu-root"></div>
 
+    <!-- ===== Stand-in for Spotify's lyrics preview + fullscreen ===== -->
+    <div
+      id="fake-lyrics-section"
+      data-testid="lyrics-npv-section"
+      style="--lyrics-color-active: rgb(255, 0, 0); --lyrics-color-inactive: rgb(0, 255, 0); --lyrics-color-passed: rgb(0, 0, 255); --lyrics-color-background: rgb(10, 10, 10);"
+      hidden
+    >
+      <h2><div>Lyrics preview</div></h2>
+      <div id="fake-lyrics-snippet"></div>
+      <div>
+        <button id="fake-lyrics-more" label="Show more" data-encore-id="buttonPrimary">
+          <span>Show more</span>
+        </button>
+        <button id="fake-lyrics-less" label="Show less" data-encore-id="buttonPrimary" hidden>
+          <span>Show less</span>
+        </button>
+      </div>
+    </div>
+    <div id="fake-lyrics-fullscreen" role="dialog" aria-label="Lyrics" hidden>
+      <button id="fake-lyrics-close" aria-label="Close">X</button>
+      <div id="fake-lyrics-full"></div>
+    </div>
+
     <!-- ===== Stand-in for Spotify's player bar + Connect picker ===== -->
     <footer id="fake-player" data-testid="now-playing-bar">
       <div data-testid="now-playing-widget">
@@ -1168,6 +1191,138 @@
             " violations=" + violations;
         }, 40);
 
+        /* ---------------- fake lyrics (preview snippet + fullscreen) -----------
+         * Same contract as the real page (see spotifyAdapter.js notes):
+         * section div[data-testid="lyrics-npv-section"] with palette custom
+         * properties, rows div[data-testid="lyrics-line"] (text in own inner
+         * div, "" = gap), active row marked aria-current, "Show more" button
+         * revealing a role=dialog fullscreen with ALL lines + Close button.
+         */
+        // Per-host lyric sets so probes can stage DIVERGENCE (stale snippet
+        // vs live overlay, or vice versa) like a real track change can leave
+        // behind. setLyrics keeps both hosts identical (the common case).
+        // Per-track registry: setTrackLyrics stores lyrics for a track id;
+        // opening the lyrics view applies the current track's set, modelling
+        // Spotify fetching on view open. setTrack itself never touches lyrics
+        // (the pessimistic stale case).
+        var lyricByTrack = {};
+        function applyTrackLyrics() {
+          var reg = lyricByTrack[curTrackId];
+          if (!reg) return false;
+          var sameLines = reg.lines.length === lyricSectionLines.length &&
+            reg.lines.every(function (t, i) { return t === lyricSectionLines[i]; });
+          if (sameLines && reg.active === lyricSectionActive) return false;
+          lyricSectionLines = reg.lines.slice();
+          lyricSectionActive = reg.active;
+          lyricDialogLines = reg.lines.slice();
+          lyricDialogActive = reg.active;
+          paintLyrics();
+          return true;
+        }
+        var lyricSectionLines = [];
+        var lyricSectionActive = -1;
+        var lyricDialogLines = [];
+        var lyricDialogActive = -1;
+        var lyricExpanded = false; // snippet holds ALL lines, Show more gone
+        var lyricInlineMode = false; // Show more expands inline, no dialog
+        var lyricCold = false; // snippet frozen until primed (unprimed engine)
+        var lyricPrimed = false;
+        var lyricSection = document.getElementById("fake-lyrics-section");
+        var lyricSnippet = document.getElementById("fake-lyrics-snippet");
+        var lyricFs = document.getElementById("fake-lyrics-fullscreen");
+        var lyricFull = document.getElementById("fake-lyrics-full");
+
+        function paintLyricRows(host, lines, active, max) {
+          host.innerHTML = "";
+          var n = typeof max === "number" ? Math.min(max, lines.length) : lines.length;
+          for (var i = 0; i < n; i++) {
+            (function (idx) {
+              var row = document.createElement("div");
+              row.setAttribute("data-testid", "lyrics-line");
+              row.setAttribute("dir", "auto");
+              var inner = document.createElement("div");
+              inner.textContent = lines[idx];
+              row.appendChild(inner);
+              if (idx === active) row.setAttribute("aria-current", "true");
+              host.appendChild(row);
+            })(i);
+          }
+        }
+
+        function paintSection() {
+          if (!lyricSectionLines.length) {
+            lyricSection.hidden = true;
+            return;
+          }
+          lyricSection.hidden = false;
+          // Preview snippet: a handful, unless expanded (all lines, like
+          // Spotify leaves it after an open cycle — Show more then is gone).
+          paintLyricRows(lyricSnippet, lyricSectionLines, lyricSectionActive,
+            lyricExpanded ? lyricSectionLines.length : 5);
+          document.getElementById("fake-lyrics-more").hidden =
+            !(lyricSectionLines.length > 5 && !lyricExpanded);
+          document.getElementById("fake-lyrics-less").hidden = !lyricExpanded;
+        }
+
+        function paintDialog() {
+          if (!lyricFs.hidden) {
+            paintLyricRows(lyricFull, lyricDialogLines, lyricDialogActive);
+          }
+        }
+
+        function paintLyrics() {
+          if (!lyricSectionLines.length && !lyricDialogLines.length) {
+            lyricSection.hidden = true;
+            return;
+          }
+          paintSection();
+          paintDialog();
+        }
+
+        function advanceScope(which) {
+          var lines = which === "dialog" ? lyricDialogLines : lyricSectionLines;
+          var active = which === "dialog" ? lyricDialogActive : lyricSectionActive;
+          var next = active + 1;
+          while (next < lines.length && !lines[next]) next++;
+          if (next >= lines.length) return active;
+          if (which === "dialog") lyricDialogActive = next;
+          else lyricSectionActive = next;
+          // Repaint ONLY this host: the other copy goes stale, like live.
+          if (which === "dialog") paintDialog();
+          else paintSection();
+          return next;
+        }
+
+        document.getElementById("fake-lyrics-more").addEventListener("click", function () {
+          // Any open primes the engine from here on, and pulls the current
+          // track's registered set (fetch-on-open).
+          lyricPrimed = true;
+          applyTrackLyrics();
+          if (lyricInlineMode) {
+            lyricExpanded = true;
+            paintLyrics();
+            logLine("[spotify] lyrics expanded inline");
+            return;
+          }
+          lyricFs.hidden = false;
+          // Like Spotify, the snippet is torn down behind its own fullscreen:
+          // readers must hold the fullscreen copy, not blank out.
+          lyricSection.hidden = true;
+          paintLyricRows(lyricFull, lyricDialogLines, lyricDialogActive);
+          logLine("[spotify] lyrics fullscreen opened");
+        });
+        document.getElementById("fake-lyrics-less").addEventListener("click", function () {
+          lyricExpanded = false;
+          paintLyrics();
+          logLine("[spotify] lyrics collapsed inline");
+        });
+        document.getElementById("fake-lyrics-close").addEventListener("click", function () {
+          lyricFs.hidden = true;
+          if (lyricSectionLines.length) lyricSection.hidden = false;
+          paintLyrics();
+          logLine("[spotify] lyrics fullscreen closed");
+        });
+
         window.harness = {
           setMode: function (m) {
             MODE = m;
@@ -1270,6 +1425,94 @@
           },
           curationOpen: function () {
             return curationFormOpen();
+          },
+          // Lyrics (fake Spotify state; the adapter only reads DOM).
+          setLyrics: function (lines, active) {
+            lyricSectionLines = (lines || []).slice();
+            lyricSectionActive = typeof active === "number" ? active : -1;
+            lyricDialogLines = (lines || []).slice();
+            lyricDialogActive = typeof active === "number" ? active : -1;
+            lyricExpanded = false;
+            lyricPrimed = !lyricCold;
+            if (!lyricFs.hidden) lyricFs.hidden = true;
+            paintLyrics();
+            logLine("[harness] lyrics=" + lyricSectionLines.length + " active=" + lyricSectionActive);
+          },
+          // Split content per host: stale snippet vs live overlay (or vice
+          // versa), like a track change can leave behind. Shows the dialog
+          // WITHOUT hiding the section, so both copies stay visible.
+          setLyricsSplit: function (sLines, sActive, dLines, dActive) {
+            lyricSectionLines = (sLines || []).slice();
+            lyricSectionActive = typeof sActive === "number" ? sActive : -1;
+            lyricDialogLines = (dLines || []).slice();
+            lyricDialogActive = typeof dActive === "number" ? dActive : -1;
+            lyricFs.hidden = false;
+            paintLyrics();
+          },
+          showLyricsDialog: function () {
+            lyricFs.hidden = false;
+            paintLyricRows(lyricFull, lyricDialogLines, lyricDialogActive);
+          },
+          // Cold engine: flips never reach the snippet until something opens
+          // the lyrics view (priming), mirroring the live behavior where the
+          // minified view sits static pre-prime.
+          setLyricsCold: function (on) {
+            lyricCold = !!on;
+            if (!lyricCold && !lyricPrimed) {
+              lyricPrimed = true;
+              paintLyrics();
+            }
+          },
+          wasPrimed: function () {
+            return lyricPrimed;
+          },
+          advanceLyrics: function () {
+            // Move the mark to the next non-empty row (wrap-safe clamp),
+            // touching rows like Spotify's own flip does. Frozen while cold
+            // and unprimed: the engine hasn't started emitting.
+            if (lyricCold && !lyricPrimed) return lyricSectionActive;
+            advanceScope("section");
+            advanceScope("dialog");
+            return lyricSectionActive;
+          },
+          // Advance one host only (the other copy goes stale, like live).
+          advanceLyricsScope: function (which) {
+            if (lyricCold && !lyricPrimed) {
+              return which === "dialog" ? lyricDialogActive : lyricSectionActive;
+            }
+            return advanceScope(which);
+          },
+          // Simulate a post-open expanded snippet (all lines, no trigger):
+          // reopens must read the section instead of failing.
+          expandLyricsSnippet: function () {
+            lyricExpanded = true;
+            paintLyrics();
+          },
+          setLyricsInline: function (on) {
+            lyricInlineMode = !!on;
+          },
+          // Register a track's own lyric set (applied on view open, or now
+          // when it belongs to the current track).
+          setTrackLyrics: function (id, lines, active) {
+            lyricByTrack[id] = {
+              lines: (lines || []).slice(),
+              active: typeof active === "number" ? active : -1,
+            };
+            if (id === curTrackId) applyTrackLyrics();
+          },
+          // Simulate Spotify tearing down fullscreen rows mid-open (remount
+          // gap): the mirror must hold its last paint, not blank out.
+          clearLyricsFullscreenRows: function () {
+            lyricFull.innerHTML = "";
+          },
+          // Simulate a mid-render player glitch (title/artist text gap): the
+          // track key forges a lookalike while the lyrics DOM is untouched.
+          setPlayerTrackText: function (t) {
+            var link = document.getElementById("np-track-link");
+            if (link) link.textContent = t;
+          },
+          lyricsFullscreenOpen: function () {
+            return !lyricFs.hidden;
           },
         };
         // Nothing is rendered until the picker is opened — same as Spotify.

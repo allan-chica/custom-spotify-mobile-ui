@@ -35,7 +35,7 @@
     try {
       var player = factory(spotify);
       player.mount(document.body);
-      console.info("[spm] mobile player mounted.");
+      console.info("[spm] mobile player mounted.", "build", (spotify && spotify.build) || "?");
     } catch (err) {
       console.warn("[spm] mount failed:", err);
       if (attempt < MOUNT_RETRIES) {

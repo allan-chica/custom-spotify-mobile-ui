@@ -838,14 +838,56 @@
 /* ---------- Lyrics row (concept) ---------- */
 
 #spm-root .spm-lyrics {
+  margin-top: 14px;
+}
+
+/* Whole preview is one tap target that opens our fullscreen mirror. */
+#spm-root .spm-lyrics-open {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  text-align: left;
+  transition: background 0.16s;
+}
+
+#spm-root .spm-lyrics-open:hover {
+  background: var(--spm-row-hover);
+}
+
+#spm-root .spm-lyrics-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 14px;
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--spm-text);
+}
+
+#spm-root .spm-lyrics-preview {
+  display: block;
+  margin-top: 6px;
+}
+
+#spm-root .spm-lyrics-preview[hidden] {
+  display: none;
+}
+
+#spm-root .spm-lyrics-line {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  line-height: 1.65;
+  font-weight: 500;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+}
+
+#spm-root .spm-lyrics-line.spm-active {
+  font-weight: 700;
+  color: var(--spm-lyr-active, var(--spm-text));
 }
 
 #spm-root .spm-expand {
@@ -2169,4 +2211,140 @@
     animation: none;
     transition: none;
   }
+}
+
+/* ---------- Fullscreen Lyrics (custom mirror) ----------
+ * Opaque full-viewport overlay painted above everything in our root
+ * (which itself sits at z-index 999999, plus Spotify's own fullscreen is
+ * veiled underneath). Palette comes from Spotify's own lyrics section
+ * custom properties, mirrored onto --spm-lyr-* by ui.js. */
+#spm-root .spm-lbackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  /* Same contract as the sheet backdrops: the sheet-mode root is
+   * pointer-events:none, so overlays must opt back in or taps fall straight
+   * through to the card beneath (this is what made X "do nothing" while the
+   * tap liked the song). */
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#spm-root .spm-lbackdrop[hidden],
+#spm-root .spm-lsheet[hidden] {
+  display: none;
+}
+
+#spm-root .spm-lsheet {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--spm-lyr-bg, var(--spm-solid-bg));
+  color: var(--spm-lyr-inactive, var(--spm-text));
+  outline: none;
+  pointer-events: auto;
+}
+
+/* The player behind the lyrics is visible but inert (same as the sheets). */
+#spm-root.spm-lyrics-open .spm-card,
+#spm-root.spm-lyrics-open .spm-miniplayer {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#spm-root .spm-lhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 10px;
+}
+
+#spm-root .spm-ltitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+}
+
+#spm-root .spm-lclose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--spm-lyr-active, var(--spm-text));
+  transition: transform 0.12s;
+}
+
+#spm-root .spm-lclose:active {
+  transform: scale(0.9);
+}
+
+#spm-root .spm-lbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 8px 26px calc(40px + env(safe-area-inset-bottom, 0px));
+}
+
+#spm-root .spm-lbody::-webkit-scrollbar {
+  display: none;
+}
+
+#spm-root .spm-llist {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12vh 0 30vh;
+}
+
+#spm-root .spm-lline {
+  font-size: 24px;
+  line-height: 1.45;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+  text-wrap: balance;
+}
+
+#spm-root .spm-lline.spm-lgap {
+  min-height: 18px;
+}
+
+#spm-root .spm-lline.spm-active {
+  color: var(--spm-lyr-active, var(--spm-text));
+}
+
+#spm-root .spm-lstate[hidden] {
+  display: none;
+}
+
+#spm-root .spm-lstatus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20vh 20px 0;
+}
+
+#spm-root .spm-lmsg {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+  text-align: center;
+}
+
+/* Phones: full glass, like the other sheets. */
+#spm-root.spm-sheet .spm-lsheet {
+  width: var(--spm-vw);
+  max-width: none;
 }
