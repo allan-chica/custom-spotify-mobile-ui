@@ -48,6 +48,7 @@
       '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 5 8 12 15 19"/></svg>',
     expand:
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>',
+    mic: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0"/><path d="M12 17.5V21"/><path d="M9 21h6"/></svg>',
     note: '<svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>',
   };
 
@@ -92,6 +93,14 @@
       '<div class="spm-blob">' +
       '<img class="spm-art" alt="Album artwork" draggable="false" />' +
       '<div class="spm-art-fallback" aria-hidden="true">' + SVG.note + "</div>" +
+      // In-cover lyrics: lives INSIDE the blob (inset 0, clipped by its
+      // overflow + radius), so the lyrics box is pixel-identical to the
+      // artwork squircle by construction — never a sibling box to measure.
+      '<div class="spm-coverlyr" role="group" aria-label="Lyrics" hidden>' +
+      '<div class="spm-coverlyr-list"></div>' +
+      '<div class="spm-coverlyr-state" hidden></div>' +
+      '<button class="spm-coverlyr-expand" type="button" aria-label="Open lyrics fullscreen">' + SVG.expand + "</button>" +
+      "</div>" +
       "</div>" +
       "</div>" +
       '<div class="spm-titles"><h2 class="spm-title">Nothing playing</h2>' +
@@ -112,19 +121,13 @@
       '<div class="spm-aux">' +
       '<button class="spm-ghost spm-queue" type="button" aria-label="Queue">' + SVG.queue + "<span>Queue</span></button>" +
       '<button class="spm-ghost spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
+      '<button class="spm-ghost spm-coverlyr-toggle" type="button" aria-label="Show lyrics in album cover" aria-pressed="false">' + SVG.mic + "<span>Lyrics</span></button>" +
       '<div class="spm-vol">' +
       '<button class="spm-voltbtn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
       '<div class="spm-vol-bar" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">' +
       '<div class="spm-vol-track"><div class="spm-vol-fill"></div></div>' +
       "</div>" +
       "</div>" +
-      "</div>" +
-      '<div class="spm-lyrics">' +
-      '<button class="spm-lyrics-open" type="button" aria-label="Open lyrics">' +
-      '<span class="spm-lyrics-head"><span>Lyrics</span>' +
-      '<span class="spm-expand" aria-hidden="true">' + SVG.expand + "</span></span>" +
-      '<span class="spm-lyrics-preview" aria-hidden="true"></span>' +
-      "</button>" +
       "</div>" +
       '<p class="spm-status" role="status"></p>' +
       "</div>" +
@@ -248,7 +251,6 @@
     var collapseBtn = q(".spm-collapse");
     var contextEl = q(".spm-context");
     var contextLink = q(".spm-context-link");
-    var lyricsBtn = q(".spm-lyrics-open");
     var queueBtn = q(".spm-queue");
     var devicesBtn = q(".spm-devices");
     var sheetEl = q(".spm-dsheet");
@@ -278,7 +280,12 @@
     var lsheetListEl = q(".spm-llist");
     var lsheetState = q(".spm-lstate");
     var lsheetCloseBtn = q(".spm-lclose");
-    var lyricsPreviewEl = q(".spm-lyrics-preview");
+    // In-cover Lyrics refs (inside the artwork squircle itself).
+    var coverlyrEl = q(".spm-coverlyr");
+    var coverlyrList = q(".spm-coverlyr-list");
+    var coverlyrState = q(".spm-coverlyr-state");
+    var coverlyrExpand = q(".spm-coverlyr-expand");
+    var coverlyrToggle = q(".spm-coverlyr-toggle");
 
     var collapsed = false;
     var seeking = false;
@@ -841,9 +848,6 @@
     }
     bindTap(likeBtn, function (fromPointer) {
       heartTap(likeBtn, fromPointer);
-    });
-    bindTap(lyricsBtn, function () {
-      openLSheet();
     });
     contextLink.addEventListener("click", function () {
       // Open it the Spotify way: the adapter clicks Spotify's OWN context
@@ -1647,8 +1651,11 @@
       if (collapsed || gesture) return;
       if (e.pointerType === "mouse" && e.button !== 0) return;
       var t = e.target;
-      // Controls, links and the seek bar keep their own gestures.
-      if (t && t.closest && t.closest("button, input, select, textarea, a, [role='slider'], .spm-bar")) {
+      // Controls, links, the seek bar — and the in-cover lyrics scroller —
+      // keep their own gestures. (The lyrics layer owns vertical touch via
+      // touch-action: pan-y; without this carve-out a read would also drag
+      // the whole card. The expand button is covered by `button`.)
+      if (t && t.closest && t.closest("button, input, select, textarea, a, [role='slider'], .spm-bar, .spm-coverlyr")) {
         return;
       }
       if (cardEl.scrollTop > 4) return; // scrolled: let it scroll
@@ -3385,6 +3392,7 @@
     var lLastUserScroll = 0;
     var unwatchLyrics = null;
     var lSig = "";
+    var lHolding = false; // last push held (transient); render ticks expire it
     var lPaintedCount = 0; // rows currently painted in the open fullscreen
     var lPaintedFull = false; // that paint came from the fullscreen copy
     var lLastGoodAt = 0; // last delivery that carried rows (either copy)
@@ -3399,7 +3407,9 @@
 
     function applyLyricsColors(colors) {
       lColors = colors || null;
-      var targets = [lsheetEl, lyricsBtn];
+      // The blob carries the vars too: the in-cover lyrics layer lives inside
+      // it and paints its background + line colors from the same palette.
+      var targets = [lsheetEl, blob];
       for (var i = 0; i < targets.length; i++) {
         if (!targets[i] || !targets[i].style) continue;
         try {
@@ -3419,31 +3429,10 @@
       return wrap;
     }
 
-    // Preview: up to 3 lines windowed around the active one (Spotify palette).
-    function renderLyricsPreview(st) {
-      if (!lyricsPreviewEl) return;
-      while (lyricsPreviewEl.firstChild) lyricsPreviewEl.removeChild(lyricsPreviewEl.firstChild);
-      if (st) applyLyricsColors(st.colors);
-      var list = (st && st.available && st.preview && st.preview.length) ? st.preview : null;
-      lyricsPreviewEl.hidden = !list;
-      if (!list) {
-        llog("preview-empty", "");
-        return;
-      }
-      var at = (st.active >= 0 && st.active < list.length) ? st.active : -1;
-      var start = at === -1 ? 0 : Math.max(0, Math.min(at - 1, list.length - 3));
-      var shown = 0;
-      for (var i = start; i < list.length && shown < 3; i++) {
-        var row = list[i] || {};
-        var line = el("span", "spm-lyrics-line" + (i === at ? " spm-active" : ""), null);
-        var txt = row.text || "";
-        line.textContent = txt === "" ? "\u00a0" : txt;
-        lyricsPreviewEl.appendChild(line);
-        shown++;
-      }
-      llog("preview", "win=" + start + "-" + (start + shown - 1) + " active=" + at + " n=" + list.length);
-      ltrace("preview", "win=" + start + "-" + (start + shown - 1) + " active=" + at + " n=" + list.length);
-    }
+    // Track-change timestamp shared by the lyrics holds (cover + fullscreen):
+    // Spotify tears its section down for ~3s after a skip before the new
+    // song's rows mount.
+    var lastLyrTrackChangeAt = 0;
 
     function renderLSheetList(st) {
       var list = (st.full && st.full.length ? st.full : st.preview) || [];
@@ -3509,20 +3498,6 @@
       } catch (e) {}
     }
 
-    // Same opt-in live trace as the adapter (shared localStorage flag, no
-    // reload needed to toggle). Logs what the mini preview actually paints.
-    function ltrace(ev, info) {
-      var on = false;
-      try {
-        on = window.localStorage && window.localStorage.getItem("spm-debug-lyrics") === "1";
-      } catch (e) {}
-      if (on) {
-        try {
-          console.info("[spm][lyrics-ui]", ev, info || "");
-        } catch (e2) {}
-      }
-    }
-
     function scrollLActive(force) {
       if (!lsheetOpen) return;
       if (!force && nowMs() - lLastUserScroll < 6000) return; // user is reading
@@ -3537,22 +3512,28 @@
       } catch (e2) {}
     }
 
-    function paintLActive(index) {
-      var prev = null;
+    // Marks passed/active across all mounted rows (Spotify parity: rows
+    // before the active one dim) with a soft cross-fade. skipScroll lets a
+    // track change paint the mark without gliding to a stale line.
+    function paintLActive(index, skipScroll) {
+      var kids = [];
       try {
-        prev = lsheetListEl.querySelector(".spm-lline.spm-active");
-      } catch (e) {}
-      if (prev) prev.classList.remove("spm-active");
-      if (index >= 0) {
-        var next = null;
+        kids = Array.prototype.slice.call(lsheetListEl.children);
+      } catch (e) {
+        kids = [];
+      }
+      for (var k = 0; k < kids.length; k++) {
+        var ci = -1;
         try {
-          next = lsheetListEl.querySelector('.spm-lline[data-li="' + index + '"]');
+          ci = parseInt(kids[k].getAttribute("data-li"), 10);
         } catch (e2) {}
-        if (next) next.classList.add("spm-active");
+        if (!isFinite(ci)) ci = -1;
+        kids[k].classList.toggle("spm-active", index >= 0 && ci === index);
+        kids[k].classList.toggle("spm-passed", index >= 0 && ci !== -1 && ci < index);
       }
       if (index !== lActive) llog("active", lActive + "->" + index);
       lActive = index;
-      scrollLActive(false);
+      if (!skipScroll) scrollLActive(false);
     }
 
     // A track key with no text on either side is a mid-render glitch, not a
@@ -3563,10 +3544,12 @@
       return s === "" || s === "|";
     }
 
-    // Single entry for adapter pushes: preview always, fullscreen when open.
+    // Single entry for adapter pushes: cover when on, fullscreen when open.
+    var lastLyricsState = null;
     function onLyricsState(st) {
       if (!st) return;
-      renderLyricsPreview(st);
+      lastLyricsState = st;
+      paintCoverLyr(st);
       if (!lsheetOpen) return;
       var sig = llyricsSig(st);
       if (sig === lSig) return;
@@ -3593,15 +3576,23 @@
       var lostFull = lPaintedFull && !fullRows;
       if (lPaintedCount > 0 && (newRows.length === 0 || lostFull) &&
           (!trackChanged || lyricsKeyEmpty(st.trackKey) || now - lLastGoodAt < 5000)) {
+        lHolding = true;
         llog("hold", "active=" + st.active + " n=" + newRows.length);
         return;
       }
+      lHolding = false;
       lTrackKey = st.trackKey || "";
       lSig = sig;
       var rebuilt = ensureLSheetRows(st);
       lPaintedCount = newRows.length;
       lPaintedFull = !!fullRows;
-      if (trackChanged) {
+      // Fresh songs start at the top. The reset runs on every track change
+      // AND every rebuild: the first delivery after a jump still carries the
+      // old song's rows+active, and a rebuild otherwise preserves the old
+      // scroll offset — while the key has often already flipped, so the
+      // change gate alone misses it. Centering that stale line is exactly
+      // the "starts at the bottom" bug.
+      if (trackChanged || rebuilt) {
         try {
           if (lsheetBody) lsheetBody.scrollTop = 0;
         } catch (e) {}
@@ -3609,8 +3600,12 @@
       // After a rebuild the DOM holds no mark while lActive still names the
       // old index — force the paint so the highlight can never be stranded.
       if (rebuilt) lActive = -2;
-      if (st.active !== lActive) paintLActive(st.active);
-      else scrollLActive(false);
+      // Never follow-scroll on a track change: the active line at that point
+      // is the old song's (or -1), and gliding to it drags the fresh song
+      // straight back down. The mark still paints; the next live advance
+      // resumes the glide from the top.
+      if (st.active !== lActive) paintLActive(st.active, trackChanged);
+      else if (!trackChanged) scrollLActive(false);
     }
 
     function beginLSheet() {
@@ -3624,6 +3619,7 @@
       lsheetOpen = true;
       lActive = -2;
       lSig = "";
+      lHolding = false;
       lRowsSig = "";
       lPaintedCount = 0;
       lPaintedFull = false;
@@ -3745,6 +3741,233 @@
       lsheetBody.addEventListener("scroll", function () {
         lLastUserScroll = nowMs();
       }, { passive: true });
+    }
+
+    /* ---------- In-cover Lyrics (squircle swap) ----------
+     *
+     * Presentation layer only, like the fullscreen mirror: every line, the
+     * active index and the palette come from the adapter (paintCoverLyr runs
+     * off the same onLyricsState push as the preview). The mic button in the
+     * aux row swaps the artwork squircle for a lyrics box; the expand button
+     * floating top-right opens the fullscreen mirror.
+     *
+     * Geometry: the layer lives INSIDE .spm-blob at inset 0, clipped by the
+     * blob's own overflow + 26% radius — so it is pixel-identical to the
+     * artwork box by construction, in card and sheet layouts alike, with no
+     * measuring. The artwork stays mounted underneath (opaque lyric bg covers
+     * it), so load state and halos are untouched.
+     *
+     * The list is a real scroller (full lines, wrapped): it owns vertical
+     * touch via touch-action + a card-gesture carve-out, so reading never
+     * drags the card, and the active line glides into view with a smooth
+     * scroll (instant jumps only for fresh content and reduced-motion).
+     * Passed lines dim exactly like Spotify (inactive color, reduced
+     * opacity); the active line wears the lyric active color with a soft
+     * color/opacity transition; the box wears the lyric background.
+     */
+    var coverLyrOn = false;
+    try {
+      coverLyrOn = window.localStorage && window.localStorage.getItem("spm-cover-lyrics") === "1";
+    } catch (eCoverInit) {}
+    var coverLyrSig = ""; // painted content signature (full text)
+    var coverLyrKey = ""; // track key the painted rows belong to
+    var coverLyrActive = -2; // painted active index (-2 = nothing painted yet)
+    var coverLyrHolding = false; // empty-state held (transient); ticks expire it
+    var coverLyrUserScrollAt = 0; // last manual scroll (auto-follow yields to it)
+    var coverLyrProgAt = 0; // last programmatic follow (never poses as reading)
+
+    function coverLyrListOf(st) {
+      return (st.full && st.full.length ? st.full : st.preview) || [];
+    }
+
+    function setCoverLyr(on) {
+      coverLyrOn = !!on;
+      root.classList.toggle("spm-coverlyr-on", coverLyrOn);
+      if (coverlyrEl) coverlyrEl.hidden = !coverLyrOn;
+      if (coverlyrToggle) {
+        coverlyrToggle.classList.toggle("spm-active", coverLyrOn);
+        coverlyrToggle.setAttribute("aria-pressed", coverLyrOn ? "true" : "false");
+        coverlyrToggle.setAttribute(
+          "aria-label",
+          coverLyrOn ? "Show album cover" : "Show lyrics in album cover"
+        );
+      }
+      try {
+        localStorage.setItem("spm-cover-lyrics", coverLyrOn ? "1" : "0");
+      } catch (eCoverStore) {}
+      if (coverLyrOn) {
+        // Force a full (re)paint onto the revealed box: toggling must never
+        // show the previous song's lines under the new one.
+        coverLyrSig = "";
+        coverLyrKey = "";
+        coverLyrActive = -2;
+        coverLyrHolding = false;
+        var st = lastLyricsState;
+        if (!st) {
+          try {
+            st = spotify.getLyricsState ? spotify.getLyricsState() : null;
+          } catch (eCoverSeed) {}
+        }
+        if (st) paintCoverLyr(st);
+        else if (spotify.refreshLyrics) {
+          try {
+            spotify.refreshLyrics();
+          } catch (eCoverRefresh) {}
+        }
+      }
+    }
+
+    function paintCoverLyrActive(index) {
+      if (!coverlyrList) return;
+      var kids = [];
+      try {
+        kids = Array.prototype.slice.call(coverlyrList.children);
+      } catch (e) {
+        kids = [];
+      }
+      for (var k = 0; k < kids.length; k++) {
+        var ci = -1;
+        try {
+          ci = parseInt(kids[k].getAttribute("data-ci"), 10);
+        } catch (e2) {}
+        if (!isFinite(ci)) ci = -1;
+        kids[k].classList.toggle("spm-active", index >= 0 && ci === index);
+        kids[k].classList.toggle("spm-passed", index >= 0 && ci !== -1 && ci < index);
+      }
+      if (index !== coverLyrActive) llog("coverlyr-active", coverLyrActive + "->" + index);
+      coverLyrActive = index;
+    }
+
+    function paintCoverLyr(st) {
+      if (!coverLyrOn || !coverlyrEl || !coverlyrList || !coverlyrState) return;
+      if (st && st.colors) {
+        try {
+          applyLyricsColors(st.colors);
+        } catch (eC) {}
+      }
+      var list = st && st.available ? coverLyrListOf(st) : [];
+      var key = (st && st.trackKey) || "";
+      if (!list.length) {
+        // Same bounded hold as before removal of the mini preview: don't
+        // strand the old song's lines under the new key during Spotify's
+        // teardown gap, and don't blank on it either — but never hold
+        // forever (render ticks expire it; adapter re-deliveries are
+        // sig-deduped so they can't).
+        if (coverlyrList.firstChild && nowMs() - lastLyrTrackChangeAt < 4000) {
+          coverLyrHolding = true;
+          llog("coverlyr-hold", "");
+          return;
+        }
+        coverLyrHolding = false;
+        coverLyrSig = "";
+        coverLyrActive = -2;
+        while (coverlyrList.firstChild) coverlyrList.removeChild(coverlyrList.firstChild);
+        while (coverlyrState.firstChild) coverlyrState.removeChild(coverlyrState.firstChild);
+        coverlyrState.hidden = false;
+        var coverMsg = el("p", "spm-coverlyr-msg", null);
+        coverMsg.textContent =
+          st && st.available ? "No lyrics for this track." : "Lyrics aren't available right now.";
+        coverlyrState.appendChild(coverMsg);
+        llog("coverlyr-empty", "");
+        return;
+      }
+      coverlyrState.hidden = true;
+      while (coverlyrState.firstChild) coverlyrState.removeChild(coverlyrState.firstChild);
+      coverLyrHolding = false;
+      var at = st.active >= 0 && st.active < list.length ? st.active : -1;
+      // Full-text content signature (never count + length: same-shape
+      // replacements — equal row counts and equal totals — collide and would
+      // move the mark onto stale rows, like the fullscreen's lsheetContentSig).
+      var parts = [];
+      for (var n = 0; n < list.length; n++) parts.push((list[n] && list[n].text) || "");
+      var sig = key + "|" + list.length + "|" + parts.join("\n");
+      // A new key always rebuilds from the top: the first delivery after a
+      // jump still carries the OLD song's rows+active, and centering that
+      // stale line is exactly the "starts at the bottom" bug. Same-song
+      // rebuilds keep following the live line instead.
+      var keyChanged = key !== coverLyrKey;
+      coverLyrKey = key;
+      if (sig !== coverLyrSig || keyChanged) {
+        coverLyrSig = sig;
+        while (coverlyrList.firstChild) coverlyrList.removeChild(coverlyrList.firstChild);
+        for (var i = 0; i < list.length; i++) {
+          var row = list[i] || {};
+          var txt = row.text || "";
+          var line = el("div", "spm-coverlyr-line" + (txt === "" ? " spm-cgap" : ""), null);
+          line.textContent = txt;
+          line.setAttribute("data-ci", String(i));
+          coverlyrList.appendChild(line);
+        }
+        llog("coverlyr-rebuild", list.length + " rows active=" + at);
+        // Fresh nodes hold no mark while coverLyrActive still names the old
+        // index — force the paint so the highlight can never be stranded
+        // (e.g. dialog close swaps the copy with the same active index).
+        coverLyrActive = -2;
+        // Fresh songs jump straight to the top with no animation (the mark
+        // still paints below); the glide belongs to live advances, not mounts.
+        scrollCoverLyrTo(keyChanged ? -1 : at, true);
+      }
+      if (at !== coverLyrActive) {
+        paintCoverLyrActive(at);
+        // Same stale rule as the rebuild: never glide to a fresh key.
+        if (!keyChanged) scrollCoverLyrTo(at, false);
+      }
+    }
+
+    // Glides the active line to the middle of the box. Instant for fresh
+    // content; smooth for live advances (auto unless reduced-motion). Never
+    // yanks while the user is reading (their own scroll wins for 6s).
+    function scrollCoverLyrTo(index, instant) {
+      if (!coverLyrOn || !coverlyrList) return;
+      var anchor = null;
+      try {
+        anchor = index >= 0
+          ? coverlyrList.querySelector('.spm-coverlyr-line[data-ci="' + index + '"]')
+          : null;
+      } catch (e) {}
+      var top = 0;
+      if (anchor && coverlyrList) {
+        try {
+          top = Math.max(0, Math.round(
+            anchor.offsetTop - coverlyrList.clientHeight / 2 + anchor.clientHeight / 2
+          ));
+        } catch (e2) {
+          top = 0;
+        }
+      }
+      if (!instant && nowMs() - coverLyrUserScrollAt < 6000) return;
+      var smooth = !instant && !prefersReducedMotion();
+      try {
+        coverLyrProgAt = nowMs();
+        if (coverlyrList.scrollTo) {
+          coverlyrList.scrollTo({ top: top, behavior: smooth ? "smooth" : "auto" });
+        } else {
+          coverlyrList.scrollTop = top;
+        }
+      } catch (e3) {
+        try {
+          coverlyrList.scrollTop = top;
+        } catch (e4) {}
+      }
+    }
+
+    if (coverlyrList) {
+      coverlyrList.addEventListener("scroll", function () {
+        // Programmatic follows must never pose as the user reading.
+        if (nowMs() - coverLyrProgAt < 600) return;
+        coverLyrUserScrollAt = nowMs();
+      }, { passive: true });
+    }
+
+    if (coverlyrToggle) {
+      bindTap(coverlyrToggle, function () {
+        setCoverLyr(!coverLyrOn);
+      });
+    }
+    if (coverlyrExpand) {
+      bindTap(coverlyrExpand, function () {
+        openLSheet();
+      });
     }
 
     // --- snapshot rendering (no full DOM rebuilds) ---
@@ -4018,11 +4241,32 @@
       try {
         var lyrPrevTrack = prevSnap && prevSnap.track ? prevSnap.track : "";
         var lyrNewTrack = snap.track || "";
-        if (lyrPrevTrack && lyrNewTrack && lyrNewTrack !== lyrPrevTrack &&
-            spotify.refreshLyrics) {
-          spotify.refreshLyrics();
+        if (lyrPrevTrack && lyrNewTrack && lyrNewTrack !== lyrPrevTrack) {
+          lastLyrTrackChangeAt = nowMs();
+          if (spotify.refreshLyrics) spotify.refreshLyrics();
         }
       } catch (eLyr) {}
+      // Bounded lyrics-hold expiry (see paintCoverLyr / onLyricsState):
+      // snapshots arrive every few seconds even with no DOM activity, so an
+      // expired hold always converges without its own timer. Needed because
+      // adapter re-deliveries are sig-deduped — a repeated identical
+      // unavailable state notifies nobody, so nothing else would ever
+      // re-evaluate a hold.
+      try {
+        var nowHold = nowMs();
+        var needLyrSync = false;
+        if (coverLyrOn && coverLyrHolding && nowHold - lastLyrTrackChangeAt > 4000) {
+          coverLyrHolding = false;
+          needLyrSync = true;
+        }
+        if (lsheetOpen && lHolding && nowHold - lLastGoodAt > 5000) {
+          lHolding = false;
+          needLyrSync = true;
+        }
+        if (needLyrSync && spotify.getLyricsState) {
+          onLyricsState(spotify.getLyricsState());
+        }
+      } catch (eLyrHold) {}
 
       // Re-anchor the smooth clock. Spotify reports whole seconds, so a
       // hard snap on every snapshot would yank the gliding estimate back
@@ -4207,6 +4451,10 @@
         try {
           if (spotify.getLyricsState) onLyricsState(spotify.getLyricsState());
         } catch (eLyricsSeed) {}
+        // Restore the in-cover lyrics choice (paints from the seed above).
+        try {
+          if (coverLyrOn) setCoverLyr(true);
+        } catch (eCoverRestore) {}
         unsubscribe = spotify.subscribe(function (snap) {
           render(snap);
         });

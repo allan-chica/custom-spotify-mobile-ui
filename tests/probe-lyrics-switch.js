@@ -21,7 +21,7 @@
     }
   }
 
-  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-lyrics-open"),
+  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-coverlyr-toggle"),
     12000, "extension mount");
   if (!booted) return "HARNESS NEVER BOOTED";
 
@@ -32,6 +32,8 @@
   const NEW = ["new one", "new two", "", "new three", "new four", "new five", "new six", "new seven"];
   h.setLyrics(OLD, 1);
   document.getElementById("np-toggle").click(); // playing
+  await sleep(300);
+  $(".spm-coverlyr-toggle").click();
   await sleep(300);
   h.advanceLyrics(); // active -> 3, flowing
   await sleep(500);
@@ -46,10 +48,10 @@
   ok(!!stSwitch && (stSwitch.trackKey || "").indexOf("New Track") !== -1,
     "adapter follows the player to the new key (" + (stSwitch && stSwitch.trackKey) + ")");
   const shownStale = Array.prototype.map.call(
-    document.querySelectorAll("#spm-root .spm-lyrics-line"),
+    document.querySelectorAll("#spm-root .spm-coverlyr-line"),
     (e) => (e.textContent || "").trim()
   );
-  ok(shownStale.length > 0, "preview keeps showing rows (no blank/crash on switch)");
+  ok(shownStale.length > 0, "cover keeps showing rows (no blank/crash on switch)");
 
   // --- warmup notices the cold new key and primes it on its own ---
   const warmed = await waitFor(() => {
@@ -64,12 +66,12 @@
   h.advanceLyrics(); // dialog rows move (shared advance repaints visible hosts)
   const followed = await waitFor(() => {
     const rows = Array.prototype.map.call(
-      document.querySelectorAll("#spm-root .spm-lyrics-line"),
+      document.querySelectorAll("#spm-root .spm-coverlyr-line"),
       (e) => (e.textContent || "").trim()
     );
     return rows.some((t) => t === "new three" || t === "new four" || t === "new five") ? true : null;
   }, 8000, "new-track lines track");
-  ok(followed, "preview tracks the NEW song after self-priming");
+  ok(followed, "cover tracks the NEW song after self-priming");
 
   return out.join("\n") + "\n\n" + (fails ? fails + " FAILED" : "ALL PASSED");
 })()

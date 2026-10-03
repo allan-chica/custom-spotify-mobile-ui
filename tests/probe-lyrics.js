@@ -21,7 +21,7 @@
     }
   }
 
-  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-lyrics-open"),
+  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-coverlyr-toggle"),
     12000, "extension mount");
   if (!booted) return "HARNESS NEVER BOOTED";
 
@@ -51,31 +51,41 @@
   ok(!!st && /255,\s*0,\s*0/.test(st.colors.active), "active color passthrough (" + (st && st.colors.active) + ")");
   ok(!!st && st.hasMore === true, "Show more detected");
 
-  // --- our preview paints Spotify's lines + colors ---
-  const prevRows = await waitFor(() =>
-    document.querySelectorAll("#spm-root .spm-lyrics-line").length > 0, 8000, "preview rows");
-  ok(prevRows, "our preview renders Spotify rows");
+  // --- our cover paints Spotify's lines + colors ---
+  $(".spm-coverlyr-toggle").click();
+  const coverRows = await waitFor(() =>
+    document.querySelectorAll("#spm-root .spm-coverlyr-line").length > 0, 8000, "cover rows");
+  ok(coverRows, "our cover renders Spotify rows");
   const shown = Array.prototype.map.call(
-    document.querySelectorAll("#spm-root .spm-lyrics-line"),
+    document.querySelectorAll("#spm-root .spm-coverlyr-line"),
     (e) => (e.textContent || "").trim()
   );
-  ok(shown.some((t) => t === LINES[1]), "preview shows the active line text");
-  const activePrev = document.querySelector("#spm-root .spm-lyrics-line.spm-active");
+  ok(shown.some((t) => t === LINES[1]), "cover shows the active line text");
+  const activePrev = document.querySelector("#spm-root .spm-coverlyr-line.spm-active");
   ok(!!activePrev && (activePrev.textContent || "").trim() === LINES[1],
-    "preview highlights the active row");
+    "cover highlights the active row");
+  // The cross-fade animates in, so poll past the transition.
+  const colorOk = await waitFor(() => {
+    try {
+      const a = document.querySelector("#spm-root .spm-coverlyr-line.spm-active");
+      const c = a ? getComputedStyle(a).color : "";
+      return /255,\s*0,\s*0/.test(c) ? true : null;
+    } catch (e) { return null; }
+  }, 5000, "cover active color settles");
   let activeColor = "";
   try {
-    activeColor = activePrev ? getComputedStyle(activePrev).color : "";
+    const a = document.querySelector("#spm-root .spm-coverlyr-line.spm-active");
+    activeColor = a ? getComputedStyle(a).color : "";
   } catch (e) {}
-  ok(/255,\s*0,\s*0/.test(activeColor), "preview active row wears Spotify's color (" + activeColor + ")");
+  ok(colorOk, "cover active row wears Spotify's color (" + activeColor + ")");
 
-  // --- tap preview -> both fullscreens (theirs veiled, ours visible) ---
-  $(".spm-lyrics-open").click();
+  // --- tap expand -> both fullscreens (theirs veiled, ours visible) ---
+  $(".spm-coverlyr-expand").click();
   const lOpen = await waitFor(() => {
     const s = document.querySelector("#spm-root .spm-lsheet");
     return s && !s.hasAttribute("hidden");
   }, 8000, "our lyrics fullscreen");
-  ok(lOpen, "our fullscreen opens from the preview tap");
+  ok(lOpen, "our fullscreen opens from the expand tap");
   const fullCount = await waitFor(() => {
     const rows = document.querySelectorAll("#spm-root .spm-lline");
     return rows.length === LINES.length ? true : null;
@@ -150,7 +160,7 @@
   // --- reopen against an expanded snippet (no Show more): reads section ---
   h.expandLyricsSnippet();
   await sleep(300);
-  $(".spm-lyrics-open").click();
+  $(".spm-coverlyr-expand").click();
   const reopened = await waitFor(() => {
     const s = document.querySelector("#spm-root .spm-lsheet");
     return s && !s.hasAttribute("hidden");

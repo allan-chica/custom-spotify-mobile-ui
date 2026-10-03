@@ -835,78 +835,108 @@
   }
 }
 
-/* ---------- Lyrics row (concept) ---------- */
-
-#spm-root .spm-lyrics {
-  margin-top: 14px;
-}
-
-/* Whole preview is one tap target that opens our fullscreen mirror. */
-#spm-root .spm-lyrics-open {
-  display: block;
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 14px;
-  text-align: left;
-  transition: background 0.16s;
-}
-
-#spm-root .spm-lyrics-open:hover {
-  background: var(--spm-row-hover);
-}
-
-#spm-root .spm-lyrics-head {
+/* ---------- In-cover Lyrics (squircle swap) ----------
+ * The layer lives inside .spm-blob at inset 0, clipped by the blob's own
+ * overflow + 26% radius — so it is pixel-identical to the artwork box by
+ * construction, in card and sheet layouts alike, with no measuring. */
+#spm-root .spm-coverlyr {
+  position: absolute;
+  inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--spm-text);
+  flex-direction: column;
+  padding: 20px 18px;
+  overflow: hidden;
+  background: var(--spm-lyr-bg, #141415);
 }
 
-#spm-root .spm-lyrics-preview {
-  display: block;
-  margin-top: 6px;
-}
-
-#spm-root .spm-lyrics-preview[hidden] {
+#spm-root .spm-coverlyr[hidden] {
   display: none;
 }
 
-#spm-root .spm-lyrics-line {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12.5px;
-  line-height: 1.65;
-  font-weight: 500;
-  color: var(--spm-lyr-inactive, var(--spm-muted));
+/* The list itself scrolls (native touch via pan-y + a card-gesture
+ * carve-out in ui.js, so reading never drags the card). Wheel scrolls it
+ * on desktop. scroll-padding keeps the auto-follow from parking the active
+ * line under the floating expand button. */
+#spm-root .spm-coverlyr-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  scroll-padding-top: 56px;
+  scroll-padding-bottom: 12px;
 }
 
-#spm-root .spm-lyrics-line.spm-active {
+#spm-root .spm-coverlyr-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* Long lines wrap onto their own lines — never cut with an ellipsis. */
+#spm-root .spm-coverlyr-line {
+  font-size: 15px;
+  line-height: 1.5;
   font-weight: 700;
-  color: var(--spm-lyr-active, var(--spm-text));
+  letter-spacing: -0.005em;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+  white-space: normal;
+  overflow-wrap: break-word;
+  /* Softly cross-fades each line as the active mark travels. */
+  transition: color 0.45s ease, opacity 0.45s ease;
 }
 
-#spm-root .spm-expand {
+/* Passed lines dim exactly like Spotify: inactive color, half opacity. */
+#spm-root .spm-coverlyr-line.spm-passed {
+  opacity: 0.45;
+}
+
+#spm-root .spm-coverlyr-line.spm-active {
+  color: var(--spm-lyr-active, var(--spm-text));
+  opacity: 1;
+}
+
+#spm-root .spm-coverlyr-line.spm-cgap {
+  min-height: 1.5em;
+}
+
+#spm-root .spm-coverlyr-expand {
+  position: absolute;
+  top: 16px;
+  right: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  color: var(--spm-muted);
-  transition: color 0.18s, background 0.18s, transform 0.12s;
+  color: var(--spm-lyr-active, var(--spm-text));
+  background: rgba(0, 0, 0, 0.25);
 }
 
-#spm-root .spm-expand:hover {
-  color: var(--spm-cream);
-}
-
-#spm-root .spm-expand:active {
+#spm-root .spm-coverlyr-expand:active {
   transform: scale(0.9);
+}
+
+#spm-root .spm-coverlyr-state[hidden] {
+  display: none;
+}
+
+#spm-root .spm-coverlyr-msg {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--spm-lyr-inactive, var(--spm-muted));
+  text-align: center;
+  padding: 0 8px;
+}
+
+/* Mic toggle in the aux row reads selected while the cover shows lyrics. */
+#spm-root .spm-coverlyr-toggle.spm-active {
+  color: var(--spm-cream);
 }
 
 /* ---------- Aux: queue / devices / volume ---------- */
@@ -1366,6 +1396,8 @@
   #spm-root .spm-miniplayer,
   #spm-root .spm-fill,
   #spm-root .spm-mini-progress-fill,
+  #spm-root .spm-coverlyr-line,
+  #spm-root .spm-lline,
   #spm-root.spm-loading .spm-title,
   #spm-root.spm-loading .spm-artist-link,
   #spm-root.spm-loading .spm-mini-title,
@@ -2313,10 +2345,17 @@
   letter-spacing: -0.01em;
   color: var(--spm-lyr-inactive, var(--spm-muted));
   text-wrap: balance;
+  /* Softly cross-fades each line as the active mark travels. */
+  transition: color 0.45s ease, opacity 0.45s ease;
 }
 
 #spm-root .spm-lline.spm-lgap {
   min-height: 18px;
+}
+
+/* Passed lines dim exactly like the cover (and Spotify). */
+#spm-root .spm-lline.spm-passed {
+  opacity: 0.45;
 }
 
 #spm-root .spm-lline.spm-active {

@@ -21,7 +21,7 @@
     }
   }
 
-  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-lyrics-open"),
+  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-coverlyr-toggle"),
     12000, "extension mount");
   if (!booted) return "HARNESS NEVER BOOTED";
 
@@ -45,13 +45,15 @@
   const st0 = sp.getLyricsState();
   ok(!!st0 && st0.hasMore === true, "inline build offers Show more");
 
-  // --- tap preview -> inline expansion, never a dialog ---
-  $(".spm-lyrics-open").click();
+  // --- cover on, then expand -> inline expansion, never a dialog ---
+  $(".spm-coverlyr-toggle").click();
+  await sleep(300);
+  $(".spm-coverlyr-expand").click();
   const lOpen = await waitFor(() => {
     const s = document.querySelector("#spm-root .spm-lsheet");
     return s && !s.hasAttribute("hidden");
   }, 8000, "our lyrics fullscreen");
-  ok(lOpen, "our fullscreen opens from the preview tap");
+  ok(lOpen, "our fullscreen opens from the expand tap");
   const fullCount = await waitFor(() => {
     const rows = document.querySelectorAll("#spm-root .spm-lline");
     return rows.length === LINES.length ? true : null;

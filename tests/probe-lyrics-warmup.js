@@ -1,6 +1,6 @@
 // Probe: lyrics warmup for a cold (unprimed) snippet.
-// Flips only start flowing once Spotify's view opens; before that our
-// preview would sit static forever. The adapter must notice (playing +
+// Flips only start flowing once Spotify's view opens; before that our cover
+// would sit static forever. The adapter must notice (playing +
 // collapsed snippet + no flips), prime once by opening, and LEAVE it open
 // (closing would silence the feed just started) — never twice for one track.
 (async function () {
@@ -20,7 +20,7 @@
     }
   }
 
-  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-lyrics-open"),
+  const booted = await waitFor(() => window.harness && window.SpotMobile && $(".spm-coverlyr-toggle"),
     12000, "extension mount");
   if (!booted) return "HARNESS NEVER BOOTED";
 
@@ -45,16 +45,18 @@
   document.getElementById("np-toggle").click();
   await sleep(300);
 
-  // --- cold: advances never reach the snippet, preview sits static ---
+  // --- cold: advances never reach the snippet, cover sits static ---
+  $(".spm-coverlyr-toggle").click();
+  await sleep(300);
   h.advanceLyrics();
   h.advanceLyrics();
   await sleep(600);
   const frozen = Array.prototype.map.call(
-    document.querySelectorAll("#spm-root .spm-lyrics-line"),
+    document.querySelectorAll("#spm-root .spm-coverlyr-line"),
     (e) => (e.textContent || "").trim()
   );
-  ok(frozen.length === 3 && frozen[1] === LINES[1],
-    "cold snippet stays static through advances (" + JSON.stringify(frozen) + ")");
+  ok(frozen.length === 5 && frozen[1] === LINES[1],
+    "cold snippet stays static through advances (" + JSON.stringify(frozen.slice(0, 3)) + ")");
   ok(!h.wasPrimed(), "engine still unprimed");
 
   // --- warmup: adapter primes once and LEAVES the view open (veiled) ---
@@ -69,13 +71,13 @@
   } catch (e) {}
   ok(veiled === "hidden", "left-open overlay stays veiled (" + veiled + ")");
 
-  // --- flips now flow: preview tracks with zero manual opens ---
+  // --- flips now flow: cover tracks with zero manual opens ---
   h.advanceLyrics(); // -> 3
   const followed = await waitFor(() => {
-    const a = document.querySelector("#spm-root .spm-lyrics-line.spm-active");
+    const a = document.querySelector("#spm-root .spm-coverlyr-line.spm-active");
     return a && (a.textContent || "").trim() === LINES[3] ? true : null;
-  }, 8000, "preview tracks post-prime");
-  ok(followed, "minified preview tracks after priming, untouched by hand");
+  }, 8000, "cover tracks post-prime");
+  ok(followed, "in-cover lyrics track after priming, untouched by hand");
 
   // --- and it only ever warms once per track ---
   let warmStarts = 0;
