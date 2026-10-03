@@ -281,6 +281,36 @@
       <button id="connect-button" aria-label="Connect to a device">Connect to a device</button>
     </footer>
 
+    <!-- ===== Stand-in for the player-bar aside (FIRST in DOM order) ===== -->
+    <!-- Mirrors open.spotify.com: the player footer aside comes before the Now
+         Playing view, and its first context-kind link is the track's own
+         album — which a naive first-match context read mistakes for the
+         playing-from source. Kept off-screen so layout probes never see it. -->
+    <aside id="fake-player-aside" aria-label="Now playing bar"
+      style="position:fixed;left:-99999px;top:0;">
+      <img data-testid="cover-art-image" alt="" width="40" height="40" />
+      <div>
+        <a href="/album/album-wrong">Wrong Album</a>
+        <a href="/artist/artist-wrong">Wrong Artist</a>
+      </div>
+    </aside>
+
+    <!-- ===== Stand-in for the Now Playing view sidebar ===== -->
+    <!-- The playing-from header is the FIRST link and binds its context to
+         the current track (?uid=…&uri=spotify:track:…), exactly like the live
+         page — followed by the track's own album/artist links, which must
+         never win. Kept off-screen so layout probes never see it. -->
+    <aside id="fake-npv" aria-label="Now playing view"
+      style="position:fixed;left:-99999px;top:0;">
+      <div><div>
+        <a draggable="true" href="/playlist/pl-ctx?uid=abc123&uri=spotify%3Atrack%3Aharness">
+          <div><span><span><span data-encore-id="text" dir="auto">Harness Playlist</span></span></span></div>
+        </a>
+      </div></div>
+      <div><a href="/album/album-song">Harness Album</a></div>
+      <div><a href="/artist/artist-song">Harness Artist</a></div>
+    </aside>
+
     <aside id="Desktop_PanelContainer_Id" aria-label="Connect" tabindex="-1">
       <div class="panel-header">
         <span>Connect</span>

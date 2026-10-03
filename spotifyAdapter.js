@@ -21,7 +21,7 @@
   // and the mount log so a paste instantly shows whether the tab runs the
   // latest code — content scripts only refresh on extension reload + full
   // tab reload, so a stale tab otherwise debugs like a ghost.
-  var BUILD = "lx18";
+  var BUILD = "lx20";
 
   var TESTIDS = {
     playerBar: "now-playing-bar",
@@ -1635,6 +1635,9 @@
 
   // Side regions only (Now Playing panel + asides) — never the player bar
   // itself, whose /artist/ widget links are songs' performers, not context.
+  // The Now Playing VIEW sidebar leads: it hosts the playing-from header as
+  // its first link, while the "Now playing bar" aside is the player footer
+  // (cover/album/artist links) and must never win on DOM order.
   function findSideRegions() {
     var regions = [];
     function push(el) {
@@ -1643,9 +1646,37 @@
     try {
       push(findNowPlayingPanel());
       var sides = document.querySelectorAll("aside, [role='complementary']");
-      for (var i = 0; i < sides.length; i++) push(sides[i]);
+      var viewFirst = [];
+      var rest = [];
+      for (var i = 0; i < sides.length; i++) {
+        var label = "";
+        try {
+          label = norm(sides[i].getAttribute("aria-label"));
+        } catch (e) {}
+        if (label === "now playing view") viewFirst.push(sides[i]);
+        else rest.push(sides[i]);
+      }
+      for (var v = 0; v < viewFirst.length; v++) push(viewFirst[v]);
+      for (var r = 0; r < rest.length; r++) push(rest[r]);
     } catch (e) {}
     return regions;
+  }
+
+  // Widget scope: the player widget's own links (song-titled album link,
+  // performer links) describe the track, never the playing-from source.
+  // Verified live: the widget contains exactly those links and never the
+  // view header — so containment here is structural, not a label guess.
+  function inPlayerScope(el) {
+    if (!el) return false;
+    try {
+      var w = findWidget();
+      if (w && w.contains && w.contains(el)) return true;
+    } catch (e) {}
+    try {
+      var root = findPlayer();
+      if (root && root.contains && root.contains(el)) return true;
+    } catch (e2) {}
+    return false;
   }
 
   // "/playlist/37i9dQ…?uid=…&uri=…" (or absolute URLs) -> "/playlist/37i9dQ…".
@@ -1655,10 +1686,13 @@
     return { kind: m[1], href: "/" + m[1] + "/" + m[2] };
   }
 
-  // The header context link: a context-kind anchor wrapping a heading.
-  // Track/episode links are songs, never context, and are skipped.
-  // Every context-kind anchor in the side regions, in DOM order. Kept as
-  // live elements so openContext() can click Spotify's own link.
+  // The header context link: the playing-from anchor in the Now Playing
+  // view. It binds its context to the current track
+  // (/playlist/<id>?uid=…&uri=spotify:track:…); the track's own album/artist
+  // cards nearby never carry that binding. Track/episode links are songs,
+  // never context, and are skipped. Every context-kind anchor in the side
+  // regions, in DOM order. Kept as live elements so openContext() can click
+  // Spotify's own link.
   function collectContextLinks() {
     var out = [];
     try {
@@ -1674,9 +1708,19 @@
         }
         for (var i = 0; i < links.length; i++) {
           var a = links[i];
+          // Player-widget links describe the track itself (song-titled album
+          // link, performer links) — never the playing-from source. Skipped
+          // here; the widget only contributes via widgetAlbumFallback below.
+          try {
+            if (inPlayerScope(a)) continue;
+          } catch (eScope) {}
+          var rawHref = "";
+          try {
+            rawHref = a.getAttribute("href") || "";
+          } catch (e0) {}
           var info = null;
           try {
-            info = contextHrefInfo(a.getAttribute("href"));
+            info = contextHrefInfo(rawHref);
           } catch (e) {
             continue;
           }
@@ -1697,24 +1741,66 @@
               if (ht.length >= 2 && ht.length <= 70) txt = ht;
             }
           } catch (e) {}
-          out.push({ el: a, text: txt, href: info.href, headed: headed });
+          var bound = false;
+          try {
+            bound = /[?&]uri=/i.test(rawHref);
+          } catch (e2) {}
+          out.push({ el: a, text: txt, href: info.href, headed: headed, bound: bound });
         }
       }
     } catch (e) {}
     return out;
   }
 
-  // Heading-bearing links first (the header pattern), then any other
-  // context-kind link in the side regions.
+  // Last resort when the Now Playing view is gone (sidebar closed): the
+  // widget's song-titled link still carries the current track's album URL,
+  // and mediaSession names that album. Text and href are each taken from
+  // their own authoritative source — never the song title as a label.
+  // Returns null (honest unknown) when either half is missing.
+  function widgetAlbumFallback() {
+    try {
+      var t = findTrackElement();
+      if (!t) return null;
+      var href = "";
+      try {
+        href = t.getAttribute ? t.getAttribute("href") || "" : "";
+      } catch (e0) {}
+      var info = contextHrefInfo(href);
+      if (!info || info.kind !== "album") return null;
+      var album = "";
+      try {
+        var md = (window.navigator || navigator).mediaSession &&
+          (window.navigator || navigator).mediaSession.metadata;
+        album = md && md.album ? String(md.album).trim() : "";
+      } catch (e1) {}
+      if (!album) return null;
+      return { el: t, text: album, href: info.href, fallback: true };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The track-bound header first (structural: it holds across locales and
+  // regardless of region order), then heading-bearing links (older builds),
+  // then any other context-kind link in the side regions, then the widget
+  // album fallback (sidebar closed).
   function pickContextLink() {
     try {
       var links = collectContextLinks();
-      for (var pass = 0; pass < 2; pass++) {
+      for (var pass = 0; pass < 3; pass++) {
         for (var i = 0; i < links.length; i++) {
-          if (pass === 0 && !links[i].headed) continue;
+          if (pass === 0 && !links[i].bound) continue;
+          if (pass === 1 && !links[i].headed) continue;
           return links[i];
         }
       }
+      var fb = null;
+      try {
+        fb = widgetAlbumFallback();
+      } catch (eFb) {
+        fb = null;
+      }
+      if (fb) return fb;
     } catch (e) {}
     return null;
   }
@@ -1725,7 +1811,11 @@
       pick = pickContextLink();
     } catch (e) {}
     if (!pick) return { text: "", href: "", source: "" };
-    return { text: pick.text, href: pick.href, source: "npv-link" };
+    return {
+      text: pick.text,
+      href: pick.href,
+      source: pick.fallback ? "widget-album" : "npv-link",
+    };
   }
 
   function getPlaybackContext() {

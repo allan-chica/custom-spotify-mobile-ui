@@ -54,10 +54,17 @@ State reads (empty string when nothing is loaded — never site chrome):
   navigation; placeholders stay inert.
 - Context — where the song plays from, as a tappable name (no "From"
   prefix). Primary source is the Now Playing view header itself: an
-  `<a href="/playlist/…">` (or album / artist / show / collection) wrapping
-  a heading — no "Playing from" text exists there, so href shape + heading
-  descendant is the signal (query params stripped, `/track/` + `/episode/`
-  never count, player-bar links never leak in). Fallback is the Queue's
+  `<a href="/playlist/…?uid=…&uri=spotify:track:…">` (or album / artist /
+  show / collection) — no "Playing from" text and no heading exists there,
+  so the `uri=` track-binding on the href is the signal (query params
+  stripped for the destination, `/track/` + `/episode/` never count). The
+  Now Playing view sidebar leads the search, so the player-bar aside (whose
+  cover/album/artist links come first in DOM order) can never win, and
+  player-widget links are excluded outright (they describe the track, not
+  the source). With no view sidebar, the widget's album link plus
+  mediaSession's album name serve as the fallback label — never the song
+  title.
+  Fallback is the Queue's
   "Next from:" phrasing with strict anti-spoof rules. Tapping it clicks
   Spotify's OWN header link (inside its React tree), so its router handles
   it as in-app navigation — a copied URL from outside that tree forces a

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "serve": "node tests/serve.js",
-    "test": "npm run test:curation && npm run test:tippy && npm run test:stale && npm run test:lazy && npm run test:sheet && npm run test:fallback && npm run test:ui && npm run test:flaky && npm run test:lyrics && npm run test:lyrics-inline && npm run test:lyrics-warmup && npm run test:lyrics-divergence && npm run test:lyrics-switch && npm run test:coverlyrics && npm run test:transfer && npm run test:volume",
+    "test": "npm run test:curation && npm run test:tippy && npm run test:stale && npm run test:lazy && npm run test:sheet && npm run test:fallback && npm run test:ui && npm run test:flaky && npm run test:lyrics && npm run test:lyrics-inline && npm run test:lyrics-warmup && npm run test:lyrics-divergence && npm run test:lyrics-switch && npm run test:coverlyrics && npm run test:transfer && npm run test:volume && npm run test:context",
     "test:curation": "node tests/cdp-run.js tests/real-dom-curation.html",
     "test:tippy": "node tests/cdp-run.js tests/real-dom-tippy.html",
     "test:stale": "node tests/cdp-run.js tests/real-dom-stale-popper.html",
@@ -25,6 +25,8 @@
     "test:coverlyrics": "node tests/cdp-probe.js tests/harness.html tests/probe-coverlyrics.js 4000",
     "test:transfer": "node tests/cdp-probe.js tests/harness.html tests/probe-transfer.js 4000",
     "test:volume": "node tests/cdp-probe.js tests/harness.html tests/probe-volume.js 4000",
+    "test:context": "node tests/cdp-probe.js tests/harness.html tests/probe-context.js 4000",
+    "test:context": "node tests/cdp-probe.js tests/harness.html tests/probe-context.js 4000",
     "diagnose": "node -e \"console.log('Open tests/diagnose-playlists.html, then paste tests/diagnose-playlists.js into the Spotify tab console.')\""
   },
   "keywords": [],
