@@ -10,5 +10,11 @@
       "css": ["style.css"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["spmTokenHook.js"],
+      "matches": ["https://open.spotify.com/*"]
+    }
   ]
 }

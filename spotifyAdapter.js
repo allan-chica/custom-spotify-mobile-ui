@@ -1233,6 +1233,410 @@
   var watchedToggleBtn = null;
   var lastDeliveredPlay = null; // true | false | null (nothing delivered yet)
 
+  /* ---------- Scoped observation (perf mode) ----------
+   *
+   * The three observers below used to watch document.documentElement with
+   * subtree:true, so every aria-label/class/style storm on the 7000-node
+   * Home feed woke them (~1 batch/s playing, more while browsing). Now each
+   * observes only its own tiny root:
+   *   play  -> player root (footer / now-playing-bar)
+   *   main  -> player root + NPV panel root
+   *   lyrics-> lyrics section / fullscreen dialog roots (while open)
+   * plus ONE shared lifecycle watcher: childList-only (no attributes) on the
+   * document, debounced, which only (re)attaches scopes when roots appear,
+   * disappear or are replaced. Attribute storms (progress aria-valuenow,
+   * lyric line class flips, feed lazy images) never wake it.
+   */
+
+  var lifecycleObserver = null;
+  var lifecycleTimer = 0;
+  var playObservedRoot = null;
+  var mainObservedRoots = [];
+  var lyricsObservedRoots = [];
+  var lyricsSignalAt = 0; // last lifecycle batch that plausibly touched lyrics
+
+  function allConnected(roots) {
+    for (var i = 0; i < roots.length; i++) {
+      try {
+        if (!roots[i] || !document.contains(roots[i])) return false;
+      } catch (e) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function sameRootSet(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (b.indexOf(a[i]) === -1) return false;
+    }
+    return true;
+  }
+
+  // (Re)attach the play observer to the current player root. Cheap identity
+  // check: no document search when the root is unchanged.
+  function attachPlayScope() {
+    if (!playObserver) return;
+    var root = null;
+    try {
+      root = findPlayer();
+    } catch (e) {
+      root = null;
+    }
+    try {
+      if (root && !document.contains(root)) root = null;
+    } catch (e2) {
+      root = null;
+    }
+    if (root === playObservedRoot) return;
+    var hadRoot = !!playObservedRoot;
+    try {
+      playObserver.disconnect();
+    } catch (e3) {}
+    playObservedRoot = root;
+    if (root) {
+      try {
+        playObserver.observe(root, {
+          attributes: true,
+          attributeFilter: ["aria-label"],
+          childList: true,
+          subtree: true,
+        });
+      } catch (e4) {}
+    }
+    // Catch-up: attaching after a remount may have missed the mount batch
+    // (and any flip inside it). deliverPlayState dedupes identical state, so
+    // this only delivers when something actually changed while detached.
+    if (!hadRoot && root) {
+      try {
+        deliverPlayState();
+      } catch (e5) {}
+    }
+  }
+
+  function currentMainRoots() {
+    var roots = [];
+    var p = null;
+    var n = null;
+    try {
+      p = findPlayer();
+    } catch (e) {
+      p = null;
+    }
+    try {
+      n = document.querySelector('[data-testid="NPV_Panel_OpenDiv"]');
+    } catch (e2) {
+      n = null;
+    }
+    try {
+      if (p && document.contains(p)) roots.push(p);
+    } catch (e3) {}
+    try {
+      if (n && document.contains(n) && roots.indexOf(n) === -1) roots.push(n);
+    } catch (e4) {}
+    return roots;
+  }
+
+  // (Re)attach the snapshot observer to the player + NPV roots. When roots
+  // vanish (logout/navigation) the observer idles with zero targets instead
+  // of watching the document; the vanish itself emits once so state updates.
+  function attachMainScopes() {
+    if (!observer) return;
+    var roots = currentMainRoots();
+    if (sameRootSet(roots, mainObservedRoots)) return;
+    var hadRoots = mainObservedRoots.length > 0;
+    try {
+      observer.disconnect();
+    } catch (e) {}
+    mainObservedRoots = roots;
+    for (var j = 0; j < roots.length; j++) {
+      try {
+        observer.observe(roots[j], {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: [
+            "aria-label",
+            "aria-checked",
+            "aria-valuenow",
+            "aria-valuetext",
+            "src",
+            "data-active",
+            "disabled",
+          ],
+        });
+      } catch (e2) {}
+    }
+    if (hadRoots && roots.length === 0) {
+      try {
+        emitDebounced();
+      } catch (e3) {}
+    }
+    // Catch-up: a newly appeared root's mount batch was missed while
+    // detached (observation starts after the mutations). The debounced
+    // snapshot converges state without a per-mutation cost.
+    if (!hadRoots && roots.length > 0) {
+      try {
+        emitDebounced();
+      } catch (e4) {}
+    }
+  }
+
+  // Capped plausibility scan: does this lifecycle batch touch lyric rows?
+  // Mirrors the pre-filter in lyricsBatch so the full (heavier) lyrics root
+  // resolution only runs when lyrics actually mounted/changed. As a side
+  // effect it stamps lyricsFresh for every touched copy (snippet vs overlay):
+  // the overlay-vs-section tie-break in getLyricsState runs on these stamps,
+  // and a scoped observer only ever sees its own copy — without lifecycle
+  // stamping, the unseen copy would always lose the tie-break. Like
+  // lyricsBatch, the scan covers the WHOLE batch (no mutation cap): snippet
+  // and overlay repaints land in the same batch and stamping only the first
+  // match would systematically starve the second copy. Per-record work is a
+  // few getAttribute calls plus one closest() walk.
+  function batchTouchesLyrics(mutations) {
+    var found = false;
+    function mark(node) {
+      found = true;
+      try {
+        if (typeof lyricsScopeOf === "function" && typeof lyricsFresh !== "undefined" && lyricsFresh) {
+          // Stamp only attached nodes: removed (detached) rows have no
+          // ancestors, so closest() misclassifies every removed snippet row
+          // as "overlay" and poisons the tie-break. Plausibility still counts
+          // removals (teardown detection needs them); only the stamp needs
+          // attachment, mirroring lyricsBatch which stamps targets and added
+          // (attached) nodes.
+          if (node) {
+            var attached = false;
+            try {
+              attached = !!document.contains(node);
+            } catch (eAtt) {
+              attached = false;
+            }
+            if (attached) {
+              lyricsFresh[lyricsScopeOf(node)] = Date.now();
+            }
+          }
+        }
+      } catch (eMark) {}
+    }
+    var lineTid = "lyrics-line";
+    var sectionTid = "lyrics-npv-section";
+    try {
+      if (typeof LYRICS !== "undefined" && LYRICS) {
+        if (LYRICS.line) lineTid = LYRICS.line;
+        if (LYRICS.section) sectionTid = LYRICS.section;
+      }
+    } catch (e0) {}
+    var cap = mutations.length;
+    for (var s = 0; s < cap; s++) {
+      var sm = mutations[s];
+      var st = sm && sm.target;
+      if (st) {
+        try {
+          if (st.getAttribute && (st.getAttribute("data-testid") === lineTid ||
+              st.getAttribute("data-testid") === sectionTid)) mark(st);
+          else if (st.closest && st.closest('[data-testid="' + lineTid + '"],[data-testid="' + sectionTid + '"]')) mark(st);
+        } catch (e1) {}
+      }
+      if (sm && sm.type === "childList") {
+        var lists = [sm.addedNodes, sm.removedNodes];
+        for (var l = 0; l < 2; l++) {
+          var nl = lists[l];
+          if (!nl) continue;
+          for (var n = 0; n < Math.min(nl.length, 3); n++) {
+            var nd = nl[n];
+            try {
+              if (!nd || !nd.getAttribute) continue;
+              if (nd.getAttribute("data-testid") === lineTid ||
+                  nd.getAttribute("data-testid") === sectionTid) mark(nd);
+              else if (nd.querySelector && nd.querySelector(
+                  '[data-testid="' + lineTid + '"],[data-testid="' + sectionTid + '"]')) mark(nd);
+            } catch (e2) {}
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  function currentLyricsRoots() {
+    var roots = [];
+    var s = null;
+    try {
+      s = findLyricsSection();
+    } catch (e) {
+      s = null;
+    }
+    try {
+      if (s && document.contains(s)) roots.push(s);
+    } catch (e2) {}
+    var fs = null;
+    try {
+      fs = findLyricsFullscreen(0);
+    } catch (e3) {
+      fs = null;
+    }
+    try {
+      if (fs && document.contains(fs)) {
+        // Avoid nested observation: keep the outer root when one contains
+        // the other (subtree:true already covers the inner).
+        var nested = false;
+        for (var i = 0; i < roots.length; i++) {
+          try {
+            if (roots[i] === fs || roots[i].contains(fs) || fs.contains(roots[i])) {
+              if (fs.contains(roots[i])) roots[i] = fs;
+              nested = true;
+              break;
+            }
+          } catch (e4) {}
+        }
+        if (!nested) roots.push(fs);
+      }
+    } catch (e5) {}
+    return roots;
+  }
+
+  // (Re)attach the lyrics observer. With no subscribers or no open lyrics
+  // roots it stays disconnected instead of watching the document.
+  function attachLyricsScopes() {
+    if (!lyricsObserver) return;
+    if (typeof lyricsSubs === "undefined" || !lyricsSubs || !lyricsSubs.length) {
+      if (lyricsObservedRoots.length) {
+        try {
+          lyricsObserver.disconnect();
+        } catch (e) {}
+        lyricsObservedRoots = [];
+      }
+      return;
+    }
+    var roots = currentLyricsRoots();
+    if (sameRootSet(roots, lyricsObservedRoots)) return;
+    var hadRoots = lyricsObservedRoots.length > 0;
+    try {
+      lyricsObserver.disconnect();
+    } catch (e2) {}
+    lyricsObservedRoots = roots;
+    for (var j = 0; j < roots.length; j++) {
+      try {
+        lyricsObserver.observe(roots[j], {
+          attributes: true,
+          attributeFilter: ["class", "aria-current", "aria-selected", "data-active", "style"],
+          childList: true,
+          subtree: true,
+        });
+      } catch (e3) {}
+    }
+    // Catch-up: attaching after lyrics mounted misses the mount batch (and
+    // with it the current active line). Unlike snapshots there is no periodic
+    // tick for lyrics, so push current state now. Same-state pushes are
+    // benign (the UI repaints identically).
+    if (!hadRoots && roots.length > 0) {
+      try {
+        deliverLyrics();
+      } catch (e4) {}
+    }
+  }
+
+  // Re-resolve every scope. Cheap when nothing changed (containment checks +
+  // one NPV testid query); full root resolution only runs on transitions or
+  // a fresh lyrics signal.
+  function ensureScopes() {
+    try {
+      if (typeof playObserverStarted !== "undefined" && playObserverStarted) attachPlayScope();
+    } catch (e) {}
+    try {
+      if (typeof observerStarted !== "undefined" && observerStarted) attachMainScopes();
+    } catch (e2) {}
+    try {
+      if (typeof lyricsObserverStarted !== "undefined" && lyricsObserverStarted &&
+          typeof lyricsSubs !== "undefined" && lyricsSubs && lyricsSubs.length) {
+        // Re-resolve when the observed set is stale (detached), missing, or
+        // a fresh lyrics signal arrived: the other copy (snippet vs overlay)
+        // may have appeared while we watch only one of them. attach* is a
+        // no-op when the set is unchanged, so this is cheap when stable.
+        if (!allConnected(lyricsObservedRoots) ||
+            Date.now() - lyricsSignalAt < 1500) {
+          attachLyricsScopes();
+        }
+      }
+    } catch (e3) {}
+  }
+
+  function scheduleEnsureScopes() {
+    if (lifecycleTimer) return;
+    try {
+      lifecycleTimer = setTimeout(function () {
+        lifecycleTimer = 0;
+        ensureScopes();
+      }, 200);
+    } catch (e) {}
+  }
+
+  function lifecycleBatch(mutations) {
+    // Fast path: scoped roots still connected and no lyrics signal. The
+    // mutations array itself is not walked here beyond the capped lyrics
+    // scan, so feed/image childList storms cost almost nothing.
+    var detached = false;
+    try {
+      if (typeof playObserverStarted !== "undefined" && playObserverStarted &&
+          playObservedRoot && !document.contains(playObservedRoot)) detached = true;
+      else if (typeof observerStarted !== "undefined" && observerStarted &&
+          mainObservedRoots.length && !allConnected(mainObservedRoots)) detached = true;
+      else if (typeof lyricsObserverStarted !== "undefined" && lyricsObserverStarted &&
+          typeof lyricsSubs !== "undefined" && lyricsSubs && lyricsSubs.length &&
+          lyricsObservedRoots.length && !allConnected(lyricsObservedRoots)) detached = true;
+    } catch (e) {}
+    if (!detached) {
+      // No scope vanished. Only care about NEW roots: an unattached player
+      // (login/boot), an NPV panel opening, or fresh lyrics mounts.
+      var needCheck = false;
+      try {
+        if (typeof playObserverStarted !== "undefined" && playObserverStarted && !playObservedRoot) needCheck = true;
+        else if (typeof observerStarted !== "undefined" && observerStarted && mainObservedRoots.length === 0) needCheck = true;
+      } catch (e2) {}
+      if (!needCheck) {
+        // Lyrics mounts/advances can target the copy we are NOT watching
+        // (snippet vs overlay): any plausible lyrics batch re-validates the
+        // observed set, even when already observing something.
+        try {
+          if (typeof lyricsSubs !== "undefined" && lyricsSubs && lyricsSubs.length &&
+              batchTouchesLyrics(mutations || [])) {
+            lyricsSignalAt = Date.now();
+            needCheck = true;
+          }
+        } catch (e3) {}
+        if (!needCheck) {
+          // NPV panel may open while the player root is stable: one testid
+          // query detects it (no full root resolution on this path).
+          try {
+            if (typeof observerStarted !== "undefined" && observerStarted) {
+              var npv = document.querySelector('[data-testid="NPV_Panel_OpenDiv"]');
+              if (npv && mainObservedRoots.indexOf(npv) === -1) needCheck = true;
+            }
+          } catch (e4) {}
+        }
+      }
+      if (!needCheck) return;
+    }
+    scheduleEnsureScopes();
+  }
+
+  // The single document-wide observer left: childList-only, no attributes.
+  // Progress aria-valuenow ticks and lyric class/style flips never wake it.
+  function ensureLifecycleObserver() {
+    if (lifecycleObserver) return;
+    try {
+      lifecycleObserver = new MutationObserver(lifecycleBatch);
+      lifecycleObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+    } catch (e) {
+      lifecycleObserver = null;
+    }
+  }
+
   function deliverPlayState() {
     var s = null;
     try {
@@ -1281,6 +1685,11 @@
       } catch (e) {
         watchedToggleBtn = null;
       }
+      // The replacement may live under a remounted player root: re-attach
+      // the scoped observer so the new subtree is watched.
+      try {
+        attachPlayScope();
+      } catch (e2) {}
     }
     if (maybeFlip || structureChanged) deliverPlayState();
   }
@@ -1299,15 +1708,20 @@
     } catch (e2) {}
     try {
       playObserver = new MutationObserver(playBatch);
-      playObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["aria-label"],
-        childList: true,
-        subtree: true,
-      });
     } catch (e3) {
       playObserver = null;
     }
+    // Scoped observation (perf mode): watch the player root only, not the
+    // whole document. The toggle button always lives inside the player root
+    // (findPlayer is derived from it), so aria-label flips and button
+    // replacements are all visible here. Root remounts are handled by the
+    // shared lifecycle watcher (see ensureScopes).
+    try {
+      attachPlayScope();
+    } catch (e4) {}
+    try {
+      ensureLifecycleObserver();
+    } catch (e5) {}
   }
 
   function watchPlayState(cb) {
@@ -1318,6 +1732,9 @@
     try {
       watchedToggleBtn = findToggleButton();
     } catch (e) {}
+    try {
+      attachPlayScope();
+    } catch (e2) {}
     playSubs.push(cb);
     // No synchronous seed delivery: the UI seeds via getPlayState() and the
     // observer delivers every later flip. (Delivering here as well would just
@@ -2819,6 +3236,470 @@
   var playlistBusy = null;
   var playlistSession = { trackKey: "", added: {} }; // playlistKey -> true (real adds only)
   var playlistVeil = null;
+
+  /* ---------- Direct Pathfinder curation API ----------
+   *
+   * Verified live on open.spotify.com (persisted GraphQL operations the web
+   * player itself uses — never guessed):
+   * - editablePlaylists: ONE request returns every editable playlist for the
+   *   current track with per-playlist `curates` membership + names, URIs,
+   *   artwork. Supports server-side textFilter + offset/limit pagination.
+   * - applyCurations: add (CURATE) / remove (UNCURATE) tracks. Accepts
+   *   MULTIPLE curations in one request (verified live with two playlists).
+   *
+   * Authentication reuses Spotify's own session: spmTokenHook.js (page world,
+   * passive header tap, see manifest web_accessible_resources) relays the
+   * Bearer/client-token/app-version Spotify already sends. Nothing is
+   * hardcoded and nothing is logged. When no tokens are available (hook
+   * blocked, tests, logged out) every direct call rejects and callers fall
+   * back to the DOM flows below — which are kept intact.
+   *
+   * Hashes are Spotify-build-sensitive: if a persisted query is rejected the
+   * direct path disables itself for the session (directHealth.hashRejected)
+   * and everything keeps working through the DOM fallback.
+   */
+
+  var PATHFINDER = {
+    endpoint: "https://api-partner.spotify.com/pathfinder/v2/query",
+    appPlatform: "WebPlayer",
+    pageSize: 50,
+    maxPages: 6,
+    operations: {
+      editablePlaylists: {
+        operationName: "editablePlaylists",
+        hash: "d5c4b8096437dcc2ac9528c91dfcd299e35b747cda2f8f75d28f41f49c5092ba",
+      },
+      applyCurations: {
+        operationName: "applyCurations",
+        hash: "05b739a3a73091c213385233b9d3ed8a857c2ca29d2eebadb3d04ed12e288697",
+      },
+    },
+  };
+
+  // Token relay cache. Values live only in memory, are never logged, and are
+  // only ever sent back to Spotify's own endpoints.
+  var directAuth = { auth: "", clientToken: "", appVersion: "", at: 0 };
+  var DIRECT_AUTH_TTL_MS = 45 * 60 * 1000;
+  var tokenHookState = { injected: false, listening: false };
+  var directHealth = { hashRejected: false, lastError: "", lastOp: "" };
+
+  function directNoteError(op, reason) {
+    try {
+      directHealth.lastOp = op || "";
+      directHealth.lastError = reason || "";
+    } catch (e) {}
+  }
+
+  function onTokenHookMessage(e) {
+    try {
+      var d = e && e.data;
+      if (!d || d.source !== "spm-token-hook") return;
+      if (typeof d.auth !== "string" || d.auth.indexOf("Bearer ") !== 0) return;
+      directAuth = {
+        auth: d.auth,
+        clientToken: typeof d.clientToken === "string" ? d.clientToken : "",
+        appVersion: typeof d.appVersion === "string" ? d.appVersion : "",
+        at: Date.now(),
+      };
+    } catch (err) {}
+  }
+
+  // Inject the passive page-world header tap (once). Silently no-ops where
+  // injection is impossible (tests, CSP blocks, missing chrome runtime) —
+  // callers then fall back to the DOM flows.
+  function ensureTokenHook() {
+    if (tokenHookState.listening) return;
+    tokenHookState.listening = true;
+    try {
+      window.addEventListener("message", onTokenHookMessage);
+    } catch (e) {}
+    if (tokenHookState.injected) return;
+    tokenHookState.injected = true;
+    try {
+      var extUrl = null;
+      try {
+        extUrl = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL)
+          ? chrome.runtime.getURL("spmTokenHook.js")
+          : null;
+      } catch (eId) {
+        extUrl = null;
+      }
+      if (!extUrl) return;
+      var s = document.createElement("script");
+      s.setAttribute("src", extUrl);
+      s.setAttribute("data-spm", "token-hook");
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) {}
+  }
+
+  function getDirectAuth() {
+    try {
+      ensureTokenHook();
+    } catch (e) {}
+    if (!directAuth.auth || (Date.now() - directAuth.at) > DIRECT_AUTH_TTL_MS) return null;
+    return directAuth;
+  }
+
+  function pathfinderQuery(opKey, variables) {
+    var op = PATHFINDER.operations[opKey];
+    if (!op) return Promise.reject({ reason: "unknown-operation" });
+    if (directHealth.hashRejected) return Promise.reject({ reason: "persisted-rejected" });
+    var creds = getDirectAuth();
+    if (!creds) return Promise.reject({ reason: "no-auth" });
+    var body = null;
+    try {
+      body = JSON.stringify({
+        variables: variables,
+        operationName: op.operationName,
+        extensions: { persistedQuery: { version: 1, sha256Hash: op.hash } },
+      });
+    } catch (e) {
+      return Promise.reject({ reason: "bad-variables" });
+    }
+    var headers = { "content-type": "application/json;charset=UTF-8" };
+    try {
+      headers.authorization = creds.auth;
+      if (creds.clientToken) headers["client-token"] = creds.clientToken;
+      if (creds.appVersion) headers["spotify-app-version"] = creds.appVersion;
+      headers["app-platform"] = PATHFINDER.appPlatform;
+    } catch (e2) {}
+    return fetch(PATHFINDER.endpoint, {
+      method: "POST",
+      mode: "cors",
+      credentials: "include",
+      headers: headers,
+      body: body,
+    }).then(function (resp) {
+      if (!resp || resp.status === 401 || resp.status === 403) {
+        try {
+          directAuth = { auth: "", clientToken: "", appVersion: "", at: 0 };
+        } catch (e3) {}
+        directNoteError(opKey, "http-" + (resp ? resp.status : "?"));
+        return Promise.reject({ reason: "http-" + (resp ? resp.status : "error") });
+      }
+      if (!resp.ok) {
+        directNoteError(opKey, "http-" + resp.status);
+        return Promise.reject({ reason: "http-" + resp.status });
+      }
+      return resp.json();
+    }).then(function (json) {
+      try {
+        var errs = json && json.errors;
+        if (errs && errs.length) {
+          var msg = JSON.stringify(errs).slice(0, 200);
+          if (/persisted|hash|PERSISTED_QUERY/i.test(msg)) {
+            directHealth.hashRejected = true;
+          }
+          directNoteError(opKey, "graphql-errors");
+          return Promise.reject({ reason: "graphql-errors" });
+        }
+      } catch (e4) {}
+      return json;
+    }).catch(function (err) {
+      if (err && err.reason) throw err;
+      directNoteError(opKey, "network-error");
+      return Promise.reject({ reason: "network-error" });
+    });
+  }
+
+  function playlistIdFromUri(uri) {
+    var m = String(uri || "").match(/spotify:playlist:([A-Za-z0-9]+)/);
+    return m ? m[1] : "";
+  }
+
+  function editableImageOf(itemData) {
+    try {
+      var items = itemData && itemData.images && itemData.images.items;
+      if (!items || !items.length) return "";
+      // Prefer a mid-size source; fall back to the first URL available.
+      var best = "";
+      for (var i = 0; i < items.length; i++) {
+        var srcs = items[i].sources || [];
+        for (var s = 0; s < srcs.length; s++) {
+          if (srcs[s] && srcs[s].url) {
+            var h = srcs[s].height || 0;
+            if (!best) best = srcs[s].url;
+            else if (h >= 200 && h <= 400) return srcs[s].url;
+          }
+        }
+      }
+      return best;
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // One editablePlaylists page. Only spotify:track: URIs are supported (the
+  // verified shape); episodes and anything else reject so callers fall back.
+  function editablePlaylistsPage(trackUri, textFilter, offset, limit) {
+    if (!trackUri || trackUri.indexOf("spotify:track:") !== 0) {
+      return Promise.reject({ reason: "unsupported-track-kind" });
+    }
+    return pathfinderQuery("editablePlaylists", {
+      offset: offset || 0,
+      limit: limit || PATHFINDER.pageSize,
+      textFilter: textFilter || "",
+      uris: [trackUri],
+    }).then(function (json) {
+      var page = null;
+      try {
+        page = (((json.data || {}).me || {}).editablePlaylists) || null;
+      } catch (e) {
+        page = null;
+      }
+      if (!page || !page.items) return Promise.reject({ reason: "bad-response" });
+      return page;
+    });
+  }
+
+  function normalizeEditableItem(entry) {
+    if (!entry || !entry.item) return null;
+    var uri = entry.item._uri || "";
+    var data = entry.item.data || {};
+    var isLiked = uri === "spotify:collection:tracks";
+    if (!isLiked && uri.indexOf("spotify:playlist:") !== 0) return null;
+    var id = isLiked ? "__liked__" : playlistIdFromUri(uri);
+    if (!id) return null;
+    return {
+      id: id,
+      uri: uri,
+      href: isLiked ? PLAYLIST.collectionHref : "/playlist/" + id,
+      name: data.name || "",
+      subtitle: isLiked ? "Playlist • Liked" : "Playlist",
+      artwork: editableImageOf(data),
+      containsTrack: !!entry.curates,
+      pinned: !!entry.pinned,
+      addable: true,
+      isLikedSongs: isLiked,
+    };
+  }
+
+  // Full editable list for a track (handles offset pagination). Returns
+  // {list, totalCount}. Throws {reason} on any failure so callers fall back.
+  function readEditablePlaylistsAll(trackUri, textFilter) {
+    var all = [];
+    var total = -1;
+    var offset = 0;
+    function page() {
+      return editablePlaylistsPage(trackUri, textFilter, offset, PATHFINDER.pageSize).then(function (pg) {
+        try {
+          if (typeof pg.totalCount === "number") total = pg.totalCount;
+        } catch (e) {}
+        var items = pg.items || [];
+        for (var i = 0; i < items.length; i++) {
+          var n = null;
+          try {
+            n = normalizeEditableItem(items[i]);
+          } catch (e2) {
+            n = null;
+          }
+          if (n) all.push(n);
+        }
+        offset += items.length;
+        var pagesUsed = Math.ceil(offset / PATHFINDER.pageSize);
+        if (total >= 0 && all.length >= total) return { list: all, totalCount: total };
+        if (!items.length || pagesUsed >= PATHFINDER.maxPages) {
+          return { list: all, totalCount: total >= 0 ? total : all.length };
+        }
+        return page();
+      });
+    }
+    return page();
+  }
+
+  // Direct batched mutation. changes: [{uri, type:"CURATE"|"UNCURATE"}].
+  // Resolves {ok:true} when the response carries applyCurations data.
+  function applyCurationsDirect(trackUri, changes) {
+    if (!trackUri || trackUri.indexOf("spotify:track:") !== 0) {
+      return Promise.resolve({ ok: false, reason: "unsupported-track-kind" });
+    }
+    var curations = [];
+    for (var i = 0; i < (changes || []).length; i++) {
+      var c = changes[i];
+      if (!c || !c.uri || c.uri.indexOf("spotify:playlist:") !== 0) continue;
+      if (c.type !== "CURATE" && c.type !== "UNCURATE") continue;
+      curations.push({ contextUri: c.uri, curationType: c.type });
+    }
+    if (!curations.length) return Promise.resolve({ ok: false, reason: "nothing-to-commit" });
+    return pathfinderQuery("applyCurations", {
+      input: { curations: curations, itemUris: [trackUri] },
+    }).then(function (json) {
+      var applied = null;
+      try {
+        applied = (json.data || {}).applyCurations;
+      } catch (e) {
+        applied = null;
+      }
+      if (!applied) return { ok: false, reason: "bad-response" };
+      return { ok: true };
+    }).catch(function (err) {
+      return { ok: false, reason: (err && err.reason) || "direct-failed" };
+    });
+  }
+
+  function getDirectTrackUri() {
+    try {
+      var t = getCurrentTrackUri();
+      if (t && t.uri && t.uri.indexOf("spotify:track:") === 0) return t.uri;
+    } catch (e) {}
+    return "";
+  }
+
+  function getDirectDiagnostics() {
+    return {
+      hookInjected: !!tokenHookState.injected,
+      hasAuth: !!(directAuth && directAuth.auth),
+      authAgeSec: directAuth && directAuth.at ? Math.round((Date.now() - directAuth.at) / 1000) : -1,
+      hashRejected: !!directHealth.hashRejected,
+      lastOp: directHealth.lastOp || "",
+      lastError: directHealth.lastError || "",
+    };
+  }
+
+  // Direct fresh read for the cache (full list, no query). Resolves
+  // {list, totalCount} with DOM-shaped rows; rejects so callers fall back.
+  function getPlaylistsDirect() {
+    var trackUri = "";
+    try {
+      trackUri = getDirectTrackUri();
+    } catch (e) {}
+    if (!trackUri) return Promise.reject({ reason: "no-track" });
+    if (directHealth.hashRejected) return Promise.reject({ reason: "persisted-rejected" });
+    var keyNow = trackKeyNow();
+    return readEditablePlaylistsAll(trackUri, "").then(function (res) {
+      if (!res.list.length) return Promise.reject({ reason: "direct-empty" });
+      var likedNow = false;
+      try {
+        likedNow = isLiked();
+      } catch (e2) {}
+      // The Liked row follows the live heart (same re-stamp the DOM cache
+      // path applies); every other row is server truth as returned.
+      for (var i = 0; i < res.list.length; i++) {
+        if (res.list[i].isLikedSongs) {
+          res.list[i].containsTrack = !!res.list[i].containsTrack || !!likedNow;
+        }
+      }
+      return { list: res.list, totalCount: res.totalCount, trackKey: keyNow };
+    });
+  }
+
+  // Server-side search (Step 3). Fresh direct read that never touches the
+  // main playlistCache (clearing the search restores the full cached list).
+  // Own single-flight guard so typing never disturbs full reads.
+  var playlistSearchBusy = null;
+  var playlistSearchQuery = "";
+  function searchPlaylistsDirect(query) {
+    var q = String(query || "").trim();
+    if (!q) return Promise.resolve({ ok: true, list: [], totalCount: 0, reason: "empty-query" });
+    var trackUri = "";
+    try {
+      trackUri = getDirectTrackUri();
+    } catch (e) {}
+    if (!trackUri) return Promise.resolve({ ok: false, reason: "no-track", list: [] });
+    if (directHealth.hashRejected) return Promise.resolve({ ok: false, reason: "persisted-rejected", list: [] });
+    var sig = trackUri + "|" + q.toLowerCase();
+    if (playlistSearchBusy && playlistSearchQuery === sig) return playlistSearchBusy;
+    playlistSearchQuery = sig;
+    playlistSearchBusy = readEditablePlaylistsAll(trackUri, q).then(function (res) {
+      playlistSearchBusy = null;
+      return { ok: true, list: res.list, totalCount: res.totalCount };
+    }, function (err) {
+      playlistSearchBusy = null;
+      return { ok: false, reason: (err && err.reason) || "direct-failed", list: [] };
+    });
+    return playlistSearchBusy;
+  }
+
+  // Mirror a committed direct draft into the cache + session marks, the same
+  // bookkeeping the DOM commit path performs.
+  function applyDirectTargetsToCache(targets) {
+    var list = playlistCache.list || [];
+    for (var i = 0; i < list.length; i++) {
+      for (var q = 0; q < (targets || []).length; q++) {
+        var t = targets[q];
+        if (!t || !t.uri) continue;
+        if (list[i].uri === t.uri) {
+          list[i].containsTrack = !!t.want;
+          try {
+            if (t.want) sessionMarkAdded(playlistKeyOf({ id: list[i].id }));
+            else sessionUnmark(playlistKeyOf({ id: list[i].id }));
+          } catch (e) {}
+        }
+      }
+    }
+    try {
+      playlistCache.at = Date.now();
+    } catch (e2) {}
+  }
+
+  // Direct batched commit for playlist-only drafts (Step 5). Resolves
+  // {usedDirect:false} whenever the draft is not direct-eligible (Liked
+  // Songs rows, uri-less "New playlist" rows, no track URI, no auth) so the
+  // caller runs the DOM implementation for the whole draft instead.
+  function savePlaylistDraftDirect(targets) {
+    if (!targets || !targets.length) return Promise.resolve({ usedDirect: false });
+    for (var i = 0; i < targets.length; i++) {
+      var t = targets[i];
+      if (!t) return Promise.resolve({ usedDirect: false });
+      if (t.isLikedSongs) return Promise.resolve({ usedDirect: false });
+      if (!t.uri || t.uri.indexOf("spotify:playlist:") !== 0) {
+        return Promise.resolve({ usedDirect: false });
+      }
+    }
+    var trackUri = "";
+    try {
+      trackUri = getDirectTrackUri();
+    } catch (e) {}
+    if (!trackUri) return Promise.resolve({ usedDirect: false });
+    if (directHealth.hashRejected) return Promise.resolve({ usedDirect: false });
+    var changes = [];
+    for (var j = 0; j < targets.length; j++) {
+      changes.push({ uri: targets[j].uri, type: targets[j].want ? "CURATE" : "UNCURATE" });
+    }
+    return applyCurationsDirect(trackUri, changes).then(function (res) {
+      if (!res || !res.ok) return { usedDirect: true, ok: false, failed: targets.map(function (x) { return x.name; }), list: null };
+      try {
+        applyDirectTargetsToCache(targets);
+      } catch (e2) {}
+      var list = null;
+      try {
+        list = (playlistCache.list || []).slice();
+      } catch (e3) {}
+      return { usedDirect: true, ok: true, failed: [], list: list };
+    }).catch(function () {
+      return { usedDirect: true, ok: false, failed: targets.map(function (x) { return x.name; }), list: null };
+    });
+  }
+
+  // Direct single toggle for add/remove entry points. Never rejects: {ok}
+  // on attempt, {ok:false} whenever direct is inapplicable or fails, so
+  // callers fall through to the DOM chain (Step 8).
+  function directSingleToggle(playlist, want) {
+    try {
+      if (!playlist || playlist.isLikedSongs || playlist.id === "__liked__") {
+        return Promise.resolve({ ok: false, reason: "liked-excluded" });
+      }
+      if (!playlist.uri || playlist.uri.indexOf("spotify:playlist:") !== 0) {
+        return Promise.resolve({ ok: false, reason: "no-uri" });
+      }
+      var trackUri = getDirectTrackUri();
+      if (!trackUri) return Promise.resolve({ ok: false, reason: "no-track" });
+      if (directHealth.hashRejected) return Promise.resolve({ ok: false, reason: "persisted-rejected" });
+      return applyCurationsDirect(trackUri, [{ uri: playlist.uri, type: want ? "CURATE" : "UNCURATE" }]).then(function (res) {
+        if (res && res.ok) {
+          try {
+            applyDirectTargetsToCache([{ uri: playlist.uri, want: !!want }]);
+          } catch (e) {}
+          return { ok: true };
+        }
+        return { ok: false, reason: (res && res.reason) || "direct-failed" };
+      }).catch(function () {
+        return { ok: false, reason: "direct-failed" };
+      });
+    } catch (e2) {
+      return Promise.resolve({ ok: false, reason: "direct-failed" });
+    }
+  }
 
   function trackKeyNow() {
     try {
@@ -4863,7 +5744,22 @@
   // click per changed row, commits once via Done, closes. targets =
   // [{ uri, id, name, isLikedSongs, want }]. Resolves
   // { ok, failed:[names], list? } — ok only when every change committed.
+  // Dispatcher (Step 5/8): direct batched commit first, DOM fallback whenever
+  // the draft is not direct-eligible or the direct commit fails.
   function savePlaylistDraft(targets) {
+    if (!targets || !targets.length) return Promise.resolve({ ok: true, failed: [] });
+    return savePlaylistDraftDirect(targets).then(function (res) {
+      if (res && res.usedDirect) {
+        if (res.ok) return { ok: true, failed: [], list: res.list };
+        return savePlaylistDraftDom(targets);
+      }
+      return savePlaylistDraftDom(targets);
+    }).catch(function () {
+      return savePlaylistDraftDom(targets);
+    });
+  }
+
+  function savePlaylistDraftDom(targets) {
     if (!targets || !targets.length) return Promise.resolve({ ok: true, failed: [] });
     return ensureCurationSheet().then(function (opened) {
       if (!opened || opened.reason) {
@@ -5346,18 +6242,47 @@
     if (playlistSession.trackKey !== keyNow) {
       playlistSession = { trackKey: keyNow, added: {} };
     }
-    // Curation sheet first (exact URIs, artwork, verified checks); the
-    // tippy context-menu path stays as the fallback for builds without it.
-    playlistBusy = readCurationFresh().then(function (list) {
-      if (list && list.length) {
-        playlistBusy = null;
-        return list;
-      }
-      return readPlaylistsFresh().then(function (list2) {
-        playlistBusy = null;
-        return list2 || playlistCache.list;
+    function readDomChain() {
+      // Curation sheet first (exact URIs, artwork, verified checks); the
+      // tippy context-menu path stays as the fallback for builds without it.
+      return readCurationFresh().then(function (list) {
+        if (list && list.length) {
+          playlistBusy = null;
+          return list;
+        }
+        return readPlaylistsFresh().then(function (list2) {
+          playlistBusy = null;
+          return list2 || playlistCache.list;
+        });
       });
-    });
+    }
+    // Direct Pathfinder primary (one request, server truth for list +
+    // membership). Any failure falls through to the DOM chain above.
+    var directUri = "";
+    try {
+      directUri = getDirectTrackUri();
+    } catch (eDirect) {}
+    if (directUri && !directHealth.hashRejected) {
+      playlistBusy = getPlaylistsDirect({}).then(function (res) {
+        playlistCache = {
+          list: res.list,
+          at: Date.now(),
+          ok: true,
+          reason: "",
+          trackKey: keyNow,
+          empty: res.list.length <= 1,
+          viaCuration: true,
+          via: "direct",
+          complete: true,
+        };
+        playlistBusy = null;
+        return playlistCache.list;
+      }, function () {
+        return readDomChain();
+      });
+      return playlistBusy;
+    }
+    playlistBusy = readDomChain();
     return playlistBusy;
   }
 
@@ -5369,10 +6294,13 @@
       empty: !!playlistCache.empty,
       updatedAt: playlistCache.at,
       trackKey: playlistCache.trackKey,
-// Which source produced this list. "curation" = Spotify's own
+      // Which source produced this list. "curation" = Spotify's own
       // Add-to-playlist sheet (the correct list). Anything else means the
       // fallback (Your Library scrape) — i.e. the wrong list.
       viaCuration: !!playlistCache.viaCuration,
+      // Finer source: "direct" (Pathfinder, server truth), "curation"
+      // (Spotify's sheet), or "fallback" (Your Library scrape).
+      via: playlistCache.via || (playlistCache.viaCuration ? "curation" : "fallback"),
       // False when the sweep could not prove it read every row: the list may be
       // short, and it is cached only briefly so the next open retries.
       complete: playlistCache.complete !== false,
@@ -5537,6 +6465,21 @@
         return res;
       });
     }
+    // Direct single toggle first (no Spotify UI opened); any inapplicable or
+    // failed attempt falls through to the DOM chain (Step 8).
+    return directSingleToggle(playlist, true).then(function (dres) {
+      if (dres && dres.ok) {
+        return getPlaylists({ fresh: false }).then(function (list) {
+          return { ok: true, list: list };
+        });
+      }
+      return addToPlaylistDom(playlist);
+    }, function () {
+      return addToPlaylistDom(playlist);
+    });
+  }
+
+  function addToPlaylistDom(playlist) {
     return curationToggle(playlist, true).then(function (res) {
       if (res && res.ok) {
         return getPlaylists({ fresh: false }).then(function (list) {
@@ -5562,6 +6505,21 @@
         return res;
       });
     }
+    // Direct single toggle first (no Spotify UI opened); any inapplicable or
+    // failed attempt falls through to the DOM chain (Step 8).
+    return directSingleToggle(playlist, false).then(function (dres) {
+      if (dres && dres.ok) {
+        return getPlaylists({ fresh: false }).then(function (list) {
+          return { ok: true, list: list };
+        });
+      }
+      return removeFromPlaylistDom(playlist);
+    }, function () {
+      return removeFromPlaylistDom(playlist);
+    });
+  }
+
+  function removeFromPlaylistDom(playlist) {
     return curationToggle(playlist, false).then(function (res) {
       if (res && res.ok) {
         return getPlaylists({ fresh: false }).then(function (list) {
@@ -5656,6 +6614,7 @@
       submenuRows: rows,
       cached: getPlaylistsState(),
       session: playlistSession,
+      direct: getDirectDiagnostics(),
     };
   }
 
@@ -6782,24 +7741,41 @@
     lyricsObserverStarted = true;
     try {
       lyricsObserver = new MutationObserver(lyricsBatch);
-      lyricsObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["class", "aria-current", "aria-selected", "data-active", "style"],
-        childList: true,
-        subtree: true,
-      });
     } catch (e) {
       lyricsObserver = null;
     }
+    // Scoped observation (perf mode): attach to the lyrics section /
+    // fullscreen roots when open; stay disconnected while closed instead of
+    // watching the document for class/style storms. Re-attachment on open is
+    // handled by watchLyrics() + the shared lifecycle watcher.
+    try {
+      attachLyricsScopes();
+    } catch (e2) {}
+    try {
+      ensureLifecycleObserver();
+    } catch (e3) {}
   }
 
   function watchLyrics(cb) {
     if (typeof cb !== "function") return function () {};
     startLyricsObserver();
     lyricsSubs.push(cb);
+    // A newly subscribed listener may have arrived after lyrics mounted
+    // (e.g. sheet opened before subscribe): attach now, not on next storm.
+    try {
+      attachLyricsScopes();
+    } catch (eAttach) {}
     return function () {
       for (var i = lyricsSubs.length - 1; i >= 0; i--) {
         if (lyricsSubs[i] === cb) lyricsSubs.splice(i, 1);
+      }
+      // Last listener gone: disconnect instead of idling document-wide.
+      // Re-attach happens on the next watchLyrics() via attachLyricsScopes().
+      if (!lyricsSubs.length) {
+        try {
+          if (lyricsObserver) lyricsObserver.disconnect();
+        } catch (eDisc) {}
+        lyricsObservedRoots = [];
       }
     };
   }
@@ -7077,20 +8053,16 @@
         }
         if (relevant) emitDebounced();
       });
-      observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: [
-          "aria-label",
-          "aria-checked",
-          "aria-valuenow",
-          "aria-valuetext",
-          "src",
-          "data-active",
-          "disabled",
-        ],
-      });
+      // Scoped observation (perf mode): watch the player + NPV roots only.
+      // Irrelevant feed/sidebar/image mutations never wake this callback now;
+      // the in-callback relevance filter above is kept as-is for the scoped
+      // batches. Root remounts are handled by the shared lifecycle watcher.
+      try {
+        attachMainScopes();
+      } catch (eObs) {}
+      try {
+        ensureLifecycleObserver();
+      } catch (eLife) {}
     } catch (e) {
       observer = null;
     }
@@ -7115,6 +8087,14 @@
           return;
         }
         stableTicks++;
+        // Keep scoped observation attached across Spotify remounts even if a
+        // lifecycle batch was missed: identity check only, no document scan.
+        try {
+          attachMainScopes();
+        } catch (eScope) {}
+        try {
+          if (typeof playObserverStarted !== "undefined" && playObserverStarted) attachPlayScope();
+        } catch (eScope2) {}
         emit(false);
         var busy = !!(deviceBusy || playlistBusy);
         // Piggyback the lyrics warmup on this existing tick (no new timers).
@@ -7288,6 +8268,7 @@
     togglePlaylist: togglePlaylist,
     toggleLikeAsync: toggleLikeAsync,
     savePlaylistDraft: savePlaylistDraft,
+    searchPlaylists: searchPlaylistsDirect,
     inspectPlaylists: inspectPlaylists,
     getCurrentTrackUri: getCurrentTrackUri,
 

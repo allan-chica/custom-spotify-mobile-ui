@@ -2656,6 +2656,7 @@
     var psheetTimer = 0;
     var psheetNoticeTimer = 0;
     var psheetLoadTimer = 0;
+    var psheetSearchTimer = 0;
     var psheetList = [];
     var psheetStatus = "loading"; // loading | ready | empty | error
     var psheetTrackKey = "";
@@ -2981,6 +2982,40 @@
         psheetListSig = sig;
         renderPSheet();
       }
+    }
+
+    // Merge server-side search results into the open list WITHOUT replacing
+    // it: the staged draft is keyed off psheetList, and dropping rows the
+    // server filtered out would silently discard staged checks. Matching rows
+    // get fresh membership/meta; unknown rows are appended. The client
+    // filter in renderPSheet still decides what is visible.
+    function mergePsheetSearchResults(rows) {
+      for (var i = 0; i < (rows || []).length; i++) {
+        var r = rows[i];
+        if (!r) continue;
+        var key = pkeyOf(r);
+        var idx = -1;
+        for (var j = 0; j < psheetList.length; j++) {
+          if (pkeyOf(psheetList[j]) === key) {
+            idx = j;
+            break;
+          }
+        }
+        if (idx >= 0) {
+          if (!!psheetList[idx].containsTrack !== !!r.containsTrack) {
+            psheetList[idx].containsTrack = !!r.containsTrack;
+          }
+          if (r.name && psheetList[idx].name !== r.name) psheetList[idx].name = r.name;
+          if (r.artwork !== undefined && psheetList[idx].artwork !== r.artwork) {
+            psheetList[idx].artwork = r.artwork;
+          }
+        } else {
+          psheetList.push(r);
+        }
+      }
+      try {
+        renderPSheet();
+      } catch (e) {}
     }
 
     function pdraftSig() {
@@ -3431,7 +3466,53 @@
     if (psheetSearchInput) {
       psheetSearchInput.addEventListener("input", function () {
         psheetSearch = psheetSearchInput.value || "";
+        // Server-side search (Step 3): debounced direct textFilter query whose
+        // results merge into the list below. The synchronous client filter in
+        // renderPSheet still applies instantly (and remains the fallback when
+        // the direct path is unavailable), so typing never waits on network.
+        if (psheetSearchTimer) {
+          window.clearTimeout(psheetSearchTimer);
+          psheetSearchTimer = 0;
+        }
         renderPSheet();
+        psheetSearchTimer = window.setTimeout(function () {
+          psheetSearchTimer = 0;
+          if (!psheetOpen) return;
+          var q = "";
+          try {
+            q = (psheetSearchInput.value || "").trim();
+          } catch (e) {}
+          if (!q) {
+            renderPSheet();
+            return;
+          }
+          if (!spotify.searchPlaylists) {
+            renderPSheet();
+            return;
+          }
+          var promise = null;
+          try {
+            promise = spotify.searchPlaylists(q);
+          } catch (e2) {
+            promise = null;
+          }
+          if (!promise || !promise.then) {
+            renderPSheet();
+            return;
+          }
+          promise.then(function (res) {
+            if (!psheetOpen) return;
+            var cur = "";
+            try {
+              cur = (psheetSearchInput.value || "").trim();
+            } catch (e3) {}
+            if (cur !== q) return; // superseded by newer keystrokes
+            if (res && res.ok && res.list) mergePsheetSearchResults(res.list);
+            else renderPSheet();
+          }, function () {
+            if (psheetOpen) renderPSheet();
+          });
+        }, 350);
       });
     }
 

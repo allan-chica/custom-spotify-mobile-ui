@@ -56,11 +56,47 @@
 
   // Spotify is an SPA: URL changes don't reload content scripts.
   // Re-ensure our UI is still mounted after client-side navigation.
-  var lastUrl = location.href;
-  setInterval(function () {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
+  // No polling: history events plus a body-level childList watcher (direct
+  // children only — Spotify renders deep inside its app container, so this
+  // almost never fires) re-mount if our root ever goes missing. Note the
+  // history patch below only sees same-world calls (content-script isolated
+  // world); page-world SPA navigations keep our body-level node in place, so
+  // they need no action beyond the watcher safety net.
+  function ensureMounted() {
+    try {
       if (!document.getElementById("spm-root")) mount(0);
-    }
-  }, 2000);
+    } catch (e) {}
+  }
+  try {
+    var _spmPushState = history.pushState;
+    history.pushState = function () {
+      var r = _spmPushState.apply(this, arguments);
+      ensureMounted();
+      return r;
+    };
+  } catch (ePush) {}
+  try {
+    var _spmReplaceState = history.replaceState;
+    history.replaceState = function () {
+      var r = _spmReplaceState.apply(this, arguments);
+      ensureMounted();
+      return r;
+    };
+  } catch (eReplace) {}
+  try {
+    window.addEventListener("popstate", ensureMounted);
+    window.addEventListener("hashchange", ensureMounted);
+  } catch (eEvents) {}
+  (function watchBody() {
+    try {
+      if (!document.body) {
+        setTimeout(watchBody, 500);
+        return;
+      }
+      var bodyWatcher = new MutationObserver(function () {
+        ensureMounted();
+      });
+      bodyWatcher.observe(document.body, { childList: true, subtree: false });
+    } catch (eBody) {}
+  })();
 })();
