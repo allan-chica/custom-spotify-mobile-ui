@@ -325,7 +325,7 @@
             '<svg data-testid="main-icon" role="presentation" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor"/></svg>',
         };
 
-        var MODE = "ok"; // ok | empty | error | slow | slowtransfer | veryslowtransfer
+        var MODE = "ok"; // ok | empty | error | slow | slowtransfer | veryslowtransfer | laggingcurrent | ultraslowtransfer
         var current = { key: "device-picker-header", name: "This web browser", icon: ICONS.computer };
         var devices = [
           { key: "dev-tv", name: "Living Room TV", subtitle: "", icon: ICONS.tv, fail: false },
@@ -462,21 +462,30 @@
           // A real Connect handshake can take seconds when the target is a
           // sleeping speaker/phone: slow modes model it (and the panel stays
           // open, exactly like Spotify's during a handover).
-          var handshake = MODE === "veryslowtransfer" ? 8000 : MODE === "slowtransfer" ? 4200 : 180;
+          // laggingcurrent: the row leaves + the panel closes on ack, but the
+          // current-device header lags 3s behind (backend lag, not failure).
+          // ultraslowtransfer: a 28s handshake, past the UI grace, so a slow
+          // success must still reconcile after an honest timeout.
+          var handshake = MODE === "ultraslowtransfer" ? 28000 :
+            MODE === "veryslowtransfer" ? 8000 : MODE === "slowtransfer" ? 4200 : 180;
           setTimeout(function () {
-            demoteCurrent();
-            current = {
-              key: "device-picker-header",
-              name: device.name,
-              icon: device.icon,
-              subtitle: device.subtitle || "",
-            };
             for (var i = devices.length - 1; i >= 0; i--) {
               if (devices[i].key === device.key) devices.splice(i, 1);
             }
             // Picking a device closes Spotify's own picker.
             closePanel();
             logLine("[spotify] transfer done -> " + device.name);
+            var swap = function () {
+              demoteCurrent();
+              current = {
+                key: "device-picker-header",
+                name: device.name,
+                icon: device.icon,
+                subtitle: device.subtitle || "",
+              };
+            };
+            if (MODE === "laggingcurrent") setTimeout(swap, 3000);
+            else swap();
           }, handshake);
         }
 

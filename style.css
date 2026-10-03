@@ -942,6 +942,7 @@
 /* ---------- Aux: queue / devices / volume ---------- */
 
 #spm-root .spm-aux {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -973,14 +974,33 @@
   color: var(--spm-cream);
 }
 
-#spm-root .spm-vol {
-  flex: 1 1 auto;
-  min-width: 0;
+/* Icon-only volume button: last in the aux row, pushed to the trailing edge
+ * where the old inline slider lived. */
+#spm-root .spm-volbtn {
+  margin-left: auto;
+}
+
+/* Small volume popup floating above the aux row (anchored to it, so it
+ * follows every layout with no measuring). Mute + bar are the same controls
+ * the inline slider used, only reparented. */
+#spm-root .spm-volpop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 6;
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
-  padding-left: 6px;
+  width: min(230px, 100%);
+  padding: 6px 12px 6px 2px;
+  background: var(--spm-solid-bg);
+  border: 1px solid var(--spm-card-border);
+  border-radius: 16px;
+  box-shadow: var(--spm-shadow);
+}
+
+#spm-root .spm-volpop[hidden] {
+  display: none;
 }
 
 #spm-root .spm-voltbtn {
@@ -2289,17 +2309,8 @@
 #spm-root .spm-lhead {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 10px;
-}
-
-#spm-root .spm-ltitle {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--spm-lyr-inactive, var(--spm-muted));
 }
 
 #spm-root .spm-lclose {

@@ -122,7 +122,8 @@
       '<button class="spm-ghost spm-queue" type="button" aria-label="Queue">' + SVG.queue + "<span>Queue</span></button>" +
       '<button class="spm-ghost spm-devices" type="button" aria-label="Connect to a device">' + SVG.devices + "<span>Devices</span></button>" +
       '<button class="spm-ghost spm-coverlyr-toggle" type="button" aria-label="Show lyrics in album cover" aria-pressed="false">' + SVG.mic + "<span>Lyrics</span></button>" +
-      '<div class="spm-vol">' +
+      '<button class="spm-ghost spm-volbtn" type="button" aria-label="Volume" aria-expanded="false">' + SVG.volume + "</button>" +
+      '<div class="spm-volpop" hidden>' +
       '<button class="spm-voltbtn spm-mute" type="button" aria-label="Mute">' + SVG.volume + "</button>" +
       '<div class="spm-vol-bar" role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">' +
       '<div class="spm-vol-track"><div class="spm-vol-fill"></div></div>' +
@@ -184,9 +185,8 @@
       "</section>" +
       // --- custom fullscreen Lyrics (mirrors Spotify's own fullscreen) ---
       '<div class="spm-lbackdrop" hidden></div>' +
-      '<section class="spm-lsheet" role="dialog" aria-modal="true" aria-labelledby="spm-lsheet-title" tabindex="-1" hidden>' +
+      '<section class="spm-lsheet" role="dialog" aria-modal="true" aria-label="Lyrics" tabindex="-1" hidden>' +
       '<header class="spm-lhead">' +
-      '<h3 class="spm-ltitle" id="spm-lsheet-title">Lyrics</h3>' +
       '<button class="spm-lclose" type="button" aria-label="Close lyrics">' + SVG.close + "</button>" +
       "</header>" +
       '<div class="spm-lbody">' +
@@ -248,6 +248,8 @@
     var muteBtn = q(".spm-mute");
     var volBar = q(".spm-vol-bar");
     var volFill = q(".spm-vol-fill");
+    var volBtn = q(".spm-volbtn");
+    var volPop = q(".spm-volpop");
     var collapseBtn = q(".spm-collapse");
     var contextEl = q(".spm-context");
     var contextLink = q(".spm-context-link");
@@ -961,6 +963,8 @@
       var wantIcon = vv <= 0 ? SVG.mute : SVG.volume;
       if (muteBtn.innerHTML !== wantIcon) muteBtn.innerHTML = wantIcon;
       muteBtn.setAttribute("aria-label", vv <= 0 ? "Unmute" : "Mute");
+      // The aux volume button mirrors the level with the same glyph.
+      if (volBtn && volBtn.innerHTML !== wantIcon) volBtn.innerHTML = wantIcon;
     }
 
     function pushVolume(v) {
@@ -1020,6 +1024,33 @@
         e.preventDefault();
       }
     });
+
+    // --- volume popup: the aux speaker button opens a small volume panel ---
+    // (The old inline slider is gone; its mute + bar live untouched inside
+    // the popup, so all of the wiring above keeps working as-is.)
+    var volPopOpen = false;
+
+    function setVolPop(open) {
+      volPopOpen = !!open;
+      if (volPop) volPop.hidden = !volPopOpen;
+      if (volBtn) volBtn.setAttribute("aria-expanded", volPopOpen ? "true" : "false");
+    }
+
+    if (volBtn) {
+      bindTap(volBtn, function () {
+        setVolPop(!volPopOpen);
+      });
+    }
+    // A press that starts anywhere outside the popup and its button closes
+    // it (capture phase, no interference with the target's own tap).
+    document.addEventListener("pointerdown", function (e) {
+      if (!volPopOpen) return;
+      var t = e && e.target;
+      try {
+        if (t && t.closest && (t.closest(".spm-volpop") || t.closest(".spm-volbtn"))) return;
+      } catch (err) {}
+      setVolPop(false);
+    }, true);
 
     // --- linear progress: slim line under the artwork, tap/drag to seek ---
     // Smoothness design: Spotify-DOM reads (~1/sec + snapshots) only rebase
@@ -1655,7 +1686,7 @@
       // keep their own gestures. (The lyrics layer owns vertical touch via
       // touch-action: pan-y; without this carve-out a read would also drag
       // the whole card. The expand button is covered by `button`.)
-      if (t && t.closest && t.closest("button, input, select, textarea, a, [role='slider'], .spm-bar, .spm-coverlyr")) {
+      if (t && t.closest && t.closest("button, input, select, textarea, a, [role='slider'], .spm-bar, .spm-coverlyr, .spm-volpop")) {
         return;
       }
       if (cardEl.scrollTop > 4) return; // scrolled: let it scroll
@@ -1898,6 +1929,11 @@
     var sheetPendingKey = "";
     var sheetPendingSince = 0; // >0 once the adapter gave up waiting (still in flight)
     var sheetPendingName = "";
+    // A transfer we already reported as failed ("Couldn't switch to X"): kept
+    // so a later refresh that shows X as current can take the error back.
+    // Slow handshakes routinely land after the verdict — without this the
+    // failure sticks even though the music moved.
+    var sheetFailedName = "";
     // If a transfer never shows up as current, stop pretending after this long.
     var SHEET_PENDING_MS = 15000;
     var sheetDrag = null;
@@ -2095,12 +2131,31 @@
         if (pendingActive) {
           sheetPendingKey = "";
           sheetPendingSince = 0;
+          sheetFailedName = "";
           setSheetNotice("");
         } else if (sheetPendingSince && nowMs() - sheetPendingSince > SHEET_PENDING_MS) {
           var stuck = sheetPendingName || "that device";
           sheetPendingKey = "";
           sheetPendingSince = 0;
+          sheetFailedName = sheetPendingName || "";
           setSheetNotice("Couldn't switch to " + stuck + ".");
+        }
+      }
+      // A failure we already reported is taken back the moment Spotify shows
+      // that device as current: the transfer simply landed later than the
+      // verdict (slow handshake), and the error must not outlive the success.
+      if (sheetFailedName) {
+        var failedActive = false;
+        for (var f = 0; f < sheetDevices.length; f++) {
+          var fd = sheetDevices[f];
+          if (fd && fd.isActive && fd.name === sheetFailedName) {
+            failedActive = true;
+            break;
+          }
+        }
+        if (failedActive) {
+          sheetFailedName = "";
+          setSheetNotice("");
         }
       }
       var others = 0;
@@ -2189,6 +2244,7 @@
       sheetPendingKey = deviceKeyOf(device);
       sheetPendingSince = 0; // 0 = the adapter is still working on it
       sheetPendingName = device.name || "that device";
+      sheetFailedName = ""; // a new attempt supersedes any old failure
       renderSheet();
       var promise = null;
       try {
@@ -2214,6 +2270,7 @@
           if (res && res.ok) {
             sheetPendingKey = "";
             sheetPendingSince = 0;
+            sheetFailedName = "";
             setSheetNotice("");
           } else if (res && res.reason === "unconfirmed") {
             // Spotify is still handing playback over (a sleeping speaker can
@@ -2225,6 +2282,7 @@
           } else {
             sheetPendingKey = "";
             sheetPendingSince = 0;
+            sheetFailedName = device.name || "";
             setSheetNotice("Couldn't switch to " + (device.name || "that device") + ".");
           }
           if (list) applyDeviceList(list);
@@ -2237,6 +2295,7 @@
         .catch(function () {
           sheetPendingKey = "";
           sheetPendingSince = 0;
+          sheetFailedName = device.name || "";
           if (!sheetOpen) return;
           renderSheet();
           setSheetNotice("Couldn't switch to " + (device.name || "that device") + ".");
@@ -2261,6 +2320,7 @@
       sheetPendingKey = "";
       sheetPendingSince = 0;
       sheetPendingName = "";
+      sheetFailedName = "";
       sheetEmptyNote = false;
       sheetListSig = "";
       setSheetNotice("");
@@ -2560,6 +2620,11 @@
       if (psheetOpen) {
         e.preventDefault();
         closePSheet();
+        return;
+      }
+      if (volPopOpen) {
+        e.preventDefault();
+        setVolPop(false);
         return;
       }
       if (!sheetOpen) return;

@@ -2063,9 +2063,10 @@
   var deviceCache = { devices: [], at: 0, ok: false, reason: "", empty: false };
   var deviceBusy = null;
   // How long a device transfer is given to hand off before the UI is told the
-  // outcome is unresolved (a sleeping speaker can take seconds to answer).
-  // A row Spotify already flags with a status line gets much less rope.
-  var TRANSFER_WAIT_MS = 6500;
+  // outcome is unresolved (a sleeping speaker can take well over ten seconds
+  // to answer: wake + handshake + picker refresh all serialize). A row Spotify
+  // already flags with a status line gets much less rope.
+  var TRANSFER_WAIT_MS = 10000;
   var TRANSFER_FLAGGED_WAIT_MS = 3000;
   var deviceHidden = null; // { el, prev, prevPriority } while the picker is kept invisible
 
@@ -2556,12 +2557,11 @@
       var flagged = !!rowText(target, clickedKey, "subtitle");
       transferRow(target);
       // A real Connect handshake is not instant: a sleeping speaker or phone
-      // can take several seconds to answer. The row leaving the list (Spotify
-      // keeps only non-active devices there) is the success signal, but giving
-      // it only ~2.5s is what produced "Couldn't switch to …" notices while the
-      // transfer quietly finished a moment later. So: wait much longer, and do
-      // NOT close the panel while it is in flight — closing it mid-handshake
-      // is exactly how that race used to start.
+      // can take well over ten seconds to answer (wake + handshake + picker
+      // refresh serialize). The row leaving the list (Spotify keeps only
+      // non-active devices there) is the success signal. Do NOT close the
+      // panel while it is in flight — closing it mid-handshake is exactly
+      // how that race used to start.
       return waitFor(function () {
         return rowGone(clickedKey, targetName) ? true : null;
       }, flagged ? TRANSFER_FLAGGED_WAIT_MS : TRANSFER_WAIT_MS, 120)
@@ -2590,12 +2590,16 @@
               (targetName && active.name === targetName))
           );
           if (ok) return { ok: true, device: active, devices: list, reason: "" };
-          // Never report a hard failure for a handshake we simply ran out of
-          // time on: "unconfirmed" lets the UI stay honest (still connecting)
-          // and lets the next refresh settle it either way. A row Spotify was
-          // already flagging is a rejection instead, so the UI can say so at
-          // once rather than spinning.
-          var unresolved = !res.confirmed && !flagged;
+          // The row leaving the list is Spotify's own success signal for the
+          // transfer it just accepted — so a follow-up read that still shows
+          // the old header is backend lag, not a failure. Reporting
+          // "rejected" here is exactly the false "Couldn't switch to …"
+          // while the music already moved: a taken row is never a hard
+          // failure, only an unconfirmed one, and the sheet's refresh beats
+          // settle the real outcome within seconds. Only a row Spotify never
+          // took (still listed) on top of an unreachable flag is rejected
+          // fast, so the UI can say so at once rather than spinning.
+          var unresolved = res.confirmed || !flagged;
           return {
             ok: false,
             device: null,
